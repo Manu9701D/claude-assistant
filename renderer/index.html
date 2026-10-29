@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self';">
+  <title>Claude Assistant</title>
+  <link rel="stylesheet" href="../node_modules/katex/dist/katex.min.css">
+  <link rel="stylesheet" href="../node_modules/@fontsource-variable/source-serif-4/opsz.css">
+  <link rel="stylesheet" href="../node_modules/@fontsource-variable/source-serif-4/opsz-italic.css">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="parity.css">
+  <link rel="stylesheet" href="presets.css">
+  <link rel="stylesheet" href="output.css">
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
+  <link rel="stylesheet" href="terminal.css">
+  <link rel="stylesheet" href="appearance.css">
+</head>
+<body>
+  <header id="titlebar" class="drag">
+    <div class="tb-logo" data-spark title="Claude Assistant"></div>
+    <button id="side-toggle" class="tb-btn no-drag" title="Barra lateral (Ctrl+Shift+E)">
+      <svg viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="13" rx="2.5"/><path d="M7.5 3.5v13"/></svg>
+    </button>
+    <span id="test-badge" class="test-badge" hidden title="Copia de pruebas: los cambios aún no están en tu app">Pruebas</span>
+    <div id="tabs"></div>
+    <button id="new-tab" class="tb-btn no-drag" title="Nueva pestaña (Ctrl+T)">
+      <svg viewBox="0 0 20 20"><path d="M10 5v10M5 10h10"/></svg>
+    </button>
+    <button id="tb-menu" class="tb-btn no-drag" title="Menú">
+      <svg viewBox="0 0 20 20"><path d="m5.5 8 4.5 4.5L14.5 8"/></svg>
+    </button>
+    <div class="tb-fill"></div>
+    <button id="context" class="ctx-chip no-drag" hidden></button>
+    <button id="account" class="account-chip no-drag" hidden title="Cuenta de Claude · clic para cambiar"></button>
+    <button id="usage" class="usage no-drag" hidden title="Uso del plan"></button>
+    <button id="tb-keys" class="tb-btn no-drag" title="Atajos de teclado (F1)">
+      <svg viewBox="0 0 20 20"><rect x="2.5" y="5" width="15" height="10" rx="2"/><path d="M5.5 8h.01M8.5 8h.01M11.5 8h.01M14.5 8h.01M6.5 12h7"/></svg>
+    </button>
+    <button id="tb-settings" class="tb-btn no-drag" title="Configuración (Ctrl+,)">
+      <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/><circle cx="10" cy="10" r="5.3"/></svg>
+    </button>
+    <div class="tb-controls"></div>
+  </header>
+
+  <div id="shell">
+  <aside id="sidebar" hidden>
+    <div class="side-actions">
+      <button type="button" class="side-btn" id="side-new"><svg viewBox="0 0 20 20"><path d="M10 5v10M5 10h10"/></svg><span>Nueva pestaña</span></button>
+      <button type="button" class="side-btn" id="side-search"><svg viewBox="0 0 20 20"><circle cx="9" cy="9" r="5.5"/><path d="m13 13 3.5 3.5"/></svg><span>Buscar conversaciones</span></button>
+    </div>
+    <div id="side-list" class="side-list"></div>
+  </aside>
+  <main id="main" class="is-empty">
+    <section id="picker" hidden>
+      <div class="picker-inner">
+        <div class="picker-spark" data-spark></div>
+        <h2 class="picker-title" id="picker-title">¿Con qué empezamos?</h2>
+        <p class="picker-sub">Elige un preset para esta pestaña · teclas <kbd>1</kbd>–<kbd>9</kbd></p>
+        <div id="preset-grid"></div>
+      </div>
+    </section>
+    <section id="terms" hidden>
+      <button id="term-back" class="term-back" title="Volver al chat (Ctrl+º)">
+        <svg viewBox="0 0 20 20"><path d="M4 5.5h12v7.5H9l-3.5 3v-3H4z"/></svg><span>Volver al chat</span>
+      </button>
+    </section>
+    <div id="stage">
+      <div id="find" class="find" hidden role="search">
+        <svg viewBox="0 0 20 20"><circle cx="9" cy="9" r="5.5"/><path d="m13 13 3.5 3.5"/></svg>
+        <input id="find-input" type="text" placeholder="Buscar en la conversación" spellcheck="false" aria-label="Buscar en la conversación">
+        <span id="find-count" class="find-count" aria-live="polite"></span>
+        <button type="button" id="find-prev" class="find-btn" title="Anterior (Shift+Enter)" aria-label="Resultado anterior"><svg viewBox="0 0 20 20"><path d="m5.5 12 4.5-4.5 4.5 4.5"/></svg></button>
+        <button type="button" id="find-next" class="find-btn" title="Siguiente (Enter)" aria-label="Resultado siguiente"><svg viewBox="0 0 20 20"><path d="m5.5 8 4.5 4.5L14.5 8"/></svg></button>
+        <button type="button" id="find-close" class="find-btn" title="Cerrar (Esc)" aria-label="Cerrar la búsqueda"><svg viewBox="0 0 20 20"><path d="m5.5 5.5 9 9M14.5 5.5l-9 9"/></svg></button>
+      </div>
+      <section id="messages">
+        <div id="thread"></div>
+        <div id="working" class="working" hidden><span class="spark"></span><span class="shimmer"></span></div>
+        <div id="prompts"></div>
+      </section>
+
+      <div id="welcome">
+        <div class="welcome-spark" data-spark></div>
+        <h2 id="greeting">Hola</h2>
+        <div id="welcome-preset" hidden></div>
+      </div>
+
+      <div id="dock">
+        <button id="to-bottom" class="to-bottom" title="Ir al final" hidden>
+          <svg viewBox="0 0 20 20"><path d="M10 4v12M5 11l5 5 5-5"/></svg>
+        </button>
+        <div id="tasks"></div>
+        <div id="queue"></div>
+        <form id="composer">
+          <div id="ac" class="ac" hidden></div>
+          <div id="attachments"></div>
+          <textarea id="input" rows="1" placeholder="¿En qué te puedo ayudar?" spellcheck="true"></textarea>
+          <div class="composer-bar">
+            <button type="button" id="attach" class="icon-btn sm" title="Añadir: imagen, archivos, captura, skills y conectores">
+              <svg viewBox="0 0 20 20"><path d="M10 4.5v11M4.5 10h11"/></svg>
+            </button>
+            <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+            <button type="button" id="cwd-chip" class="chip ghost-chip"></button>
+            <button type="button" id="model-chip" class="chip ghost-chip" title="Modelo de esta pestaña"></button>
+            <button type="button" id="effort-chip" class="chip ghost-chip" title="Esfuerzo de razonamiento de esta pestaña"></button>
+            <button type="button" id="mode-chip" class="chip ghost-chip" title="Modo de permisos (Shift+Tab)"></button>
+            <span class="composer-hint" id="composer-hint"></span>
+            <button type="button" id="term-view" class="icon-btn sm" title="Ver la terminal (Ctrl+º)" hidden>
+              <svg viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="13" rx="2.5"/><path d="m6 8 2.5 2L6 12M10.5 12.5H14"/></svg>
+            </button>
+            <button type="button" id="mic" class="icon-btn mic" title="Dictar por voz (Ctrl+M)">
+              <svg viewBox="0 0 20 20"><rect x="7.5" y="2.5" width="5" height="9.5" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></svg>
+            </button>
+            <button id="stop" type="button" class="send stop" title="Interrumpir (Esc)" hidden>
+              <svg viewBox="0 0 20 20"><rect x="6" y="6" width="8" height="8" rx="1.5"/></svg>
+            </button>
+            <button id="send" type="submit" class="send" title="Enviar (Enter)" disabled>
+              <svg viewBox="0 0 20 20"><path d="M10 15.5V4.5M5 9.5l5-5 5 5"/></svg>
+            </button>
+          </div>
+        </form>
+        <div id="suggestions"></div>
+        <p class="disclaimer" id="disclaimer"></p>
+      </div>
+    </div>
+  </main>
+  <aside id="artifact" hidden>
+    <div class="artifact-resize" title="Arrastra para cambiar el ancho"></div>
+    <header class="artifact-head">
+      <span class="artifact-title"></span>
+      <div class="artifact-tabs" role="tablist">
+        <button data-art="view" role="tab">Vista</button><button data-art="code" role="tab">Código</button>
+      </div>
+      <button class="icon-btn" data-art="copy" title="Copiar"></button>
+      <button class="icon-btn" data-art="save" title="Descargar"></button>
+      <button class="icon-btn" data-art="window" title="Abrir en una ventana"></button>
+      <button class="icon-btn" data-art="close" title="Cerrar (Esc)"></button>
+    </header>
+    <div class="artifact-body"></div>
+  </aside>
+  </div>
+
+  <div id="drop-overlay" hidden>
+    <div class="drop-card">
+      <svg viewBox="0 0 20 20"><path d="M10 13V3.5M6 7.5l4-4 4 4M3.5 12.5v2a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-2"/></svg>
+      <strong>Suelta aquí</strong>
+      <span>Las imágenes se adjuntan; los demás archivos se mencionan con @</span>
+    </div>
+  </div>
+
+  <div id="popover" class="popover" hidden></div>
+
+  <dialog id="preset-editor">
+    <form id="preset-form" method="dialog">
+      <header class="pe-head">
+        <span class="pe-avatar" id="pe-avatar"></span>
+        <div>
+          <h2 id="pe-title">Nuevo preset</h2>
+          <p class="field-help">Cada pestaña que abras con este preset empieza ya configurada así.</p>
+        </div>
+      </header>
+      <div class="pe-body">
+        <div class="pe-row">
+          <div class="field" style="flex:1">
+            <span class="field-label">Nombre</span>
+            <input name="name" required maxlength="40" placeholder="Por ejemplo: Trabajo">
+          </div>
+          <div class="field" style="width:96px">
+            <span class="field-label">Icono</span>
+            <input name="emoji" maxlength="8" placeholder="💼" class="pe-emoji">
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">Color</span>
+          <div class="swatches" id="pe-swatches"></div>
+        </div>
+        <div class="field">
+          <span class="field-label">Descripción</span>
+          <input name="description" maxlength="120" placeholder="Se muestra en el selector de pestañas">
+        </div>
+        <div class="field" id="pe-account-field" hidden>
+          <span class="field-label">Cuenta</span>
+          <select name="account" id="pe-account"></select>
+          <span class="field-help">Se abre en una ventana de esta cuenta (la que haya abierta, o una nueva). Si se queda sin uso del plan, cambia la cuenta de esa ventana con su chip, como siempre.</span>
+        </div>
+        <div class="field">
+          <span class="field-label">Carpeta de trabajo</span>
+          <div class="row"><input name="cwd" placeholder="Carpeta del proyecto"><button type="button" class="btn" id="pe-pick-cwd">Elegir…</button></div>
+          <span class="field-help">Claude Code carga automáticamente el <code>CLAUDE.md</code> de esta carpeta (y de las superiores).</span>
+        </div>
+        <div class="field">
+          <span class="field-label">Carpetas adicionales</span>
+          <textarea name="addDirs" rows="2" placeholder="Una ruta por línea (Claude podrá trabajar también en ellas)"></textarea>
+          <div><button type="button" class="btn sm" id="pe-add-dir">Añadir carpeta…</button></div>
+        </div>
+        <div class="pe-row">
+          <div class="field" style="flex:1">
+            <span class="field-label">Modelo</span>
+            <select name="model" id="pe-model"></select>
+          </div>
+          <div class="field" style="flex:1">
+            <span class="field-label">Effort</span>
+            <select name="effort">
+              <option value="">El general</option>
+              <option value="low">Bajo</option>
+              <option value="medium">Medio</option>
+              <option value="high">Alto</option>
+              <option value="xhigh">Muy alto</option>
+            </select>
+          </div>
+          <div class="field" style="flex:1">
+            <span class="field-label">Modo de permisos</span>
+            <select name="permissionMode">
+              <option value="">El general</option>
+              <option value="bypassPermissions">Acceso total</option>
+              <option value="acceptEdits">Editar libremente</option>
+              <option value="default">Preguntar siempre</option>
+              <option value="plan">Modo plan</option>
+            </select>
+          </div>
+        </div>
+        <div class="pe-tools-box">
+          <div class="tl-head">
+            <div class="tl-head-text"><span class="field-label">Conectores y herramientas</span><span class="field-help" id="pe-tools-sum"></span></div>
+            <input type="search" id="pe-tools-q" class="tl-search" placeholder="Buscar…" spellcheck="false">
+          </div>
+          <div class="tl-list" id="pe-tools"></div>
+        </div>
+        <div class="field">
+          <span class="field-label">Instrucciones del preset</span>
+          <textarea name="instructions" rows="4" placeholder="Se añaden al prompt de sistema solo en las pestañas de este preset. Para contexto de un proyecto, mejor un CLAUDE.md en su carpeta."></textarea>
+        </div>
+        <div class="field">
+          <span class="field-label">Mensaje de arranque</span>
+          <textarea name="startupPrompt" rows="3" placeholder="Opcional. Se envía solo al abrir la pestaña, para que Claude se ponga al día antes de que escribas."></textarea>
+          <span class="field-help">Consume algo de uso cada vez que abres una pestaña con este preset.</span>
+        </div>
+      </div>
+      <footer class="settings-foot">
+        <button type="button" class="btn danger-ghost" id="pe-delete">Eliminar preset</button>
+        <p id="pe-msg"></p>
+        <button type="button" class="btn" id="pe-cancel">Cancelar</button>
+        <button type="submit" class="btn primary">Guardar</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="keys-dialog">
+    <form method="dialog" class="keys">
+      <header>
+        <h2>Atajos de teclado</h2>
+        <button class="keys-close" value="close" title="Cerrar (Esc)"><svg viewBox="0 0 20 20"><path d="m5.5 5.5 9 9M14.5 5.5l-9 9"/></svg></button>
+      </header>
+      <div class="keys-body" id="keys-body" tabindex="-1" autofocus></div>
+    </form>
+  </dialog>
+
+  <dialog id="history-dialog" aria-labelledby="hist-heading">
+    <div class="hist">
+      <header>
+        <h2 id="hist-heading">Conversaciones</h2>
+        <button type="button" class="keys-close" id="hist-close" title="Cerrar (Esc)" aria-label="Cerrar"><svg viewBox="0 0 20 20"><path d="m5.5 5.5 9 9M14.5 5.5l-9 9"/></svg></button>
+      </header>
+      <div class="hist-search">
+        <svg viewBox="0 0 20 20"><circle cx="9" cy="9" r="5.5"/><path d="m13 13 3.5 3.5"/></svg>
+        <input id="hist-input" type="text" placeholder="Buscar por título, mensaje o carpeta" spellcheck="false" aria-label="Buscar conversaciones" aria-controls="hist-list">
+        <button type="button" id="hist-scope" class="hist-scope" title="Tab: esta carpeta o todas"></button>
+      </div>
+      <div id="hist-list" class="hist-list" role="listbox" aria-label="Conversaciones"></div>
+      <footer class="hist-foot"><kbd>↑</kbd><kbd>↓</kbd> moverse · <kbd>Enter</kbd> abrir · <kbd>Tab</kbd> esta carpeta o todas · <kbd>Esc</kbd> cerrar</footer>
+    </div>
+  </dialog>
+
+  <dialog id="update-dialog">
+    <form method="dialog" class="upd">
+      <div class="upd-icon" data-spark></div>
+      <h2>Cambios listos</h2>
+      <p>Lo que has probado en la copia de pruebas ya está en la app. Reiníciala para usarlo: tus pestañas se volverán a abrir con su conversación.</p>
+      <p class="upd-busy" id="upd-busy" hidden></p>
+      <footer>
+        <button type="button" class="btn" id="upd-later" title="Se aplicarán la próxima vez que abras la app">Más tarde</button>
+        <button type="button" class="btn" id="upd-idle" hidden>Cuando terminen</button>
+        <button type="button" class="btn primary" id="upd-now">Reiniciar ahora</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="login-dialog">
+    <form method="dialog" class="upd" id="login-form">
+      <div class="upd-icon" data-spark></div>
+      <h2>Iniciar sesión</h2>
+      <p>Se ha abierto el navegador. Entra con la cuenta que quieras añadir y vuelve aquí.</p>
+      <p class="upd-busy">Si el navegador entra solo con la cuenta que ya usas, cierra sesión en claude.ai o abre el enlace en una ventana privada.</p>
+      <div class="login-code">
+        <input name="code" placeholder="Si te muestra un código, pégalo aquí" autocomplete="off" spellcheck="false">
+        <button type="submit" class="btn" id="login-send">Enviar</button>
+      </div>
+      <footer>
+        <button type="button" class="btn" id="login-cancel">Cancelar</button>
+        <button type="button" class="btn" id="login-copy" disabled>Copiar enlace</button>
+        <button type="button" class="btn primary" id="login-open" disabled>Abrir de nuevo</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Pregunta de sí o no del proceso principal (p. ej. pestaña que llega de una ventana con otra cuenta) -->
+  <dialog id="ask-dialog">
+    <form method="dialog" class="upd">
+      <div class="upd-icon" data-spark></div>
+      <h2 id="ask-title"></h2>
+      <p id="ask-text"></p>
+      <footer>
+        <button type="button" class="btn" id="ask-no">Cancelar</button>
+        <button type="button" class="btn primary" id="ask-yes" autofocus>Continuar</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Primer arranque: lo que hace falta para empezar (se reabre desde el menú) -->
+  <dialog id="setup">
+    <form method="dialog" class="setup" id="setup-form">
+      <header>
+        <div class="upd-icon" data-spark></div>
+        <h2>Bienvenido a Claude Assistant</h2>
+        <p>Cada pestaña es una sesión de Claude Code. Revisa lo necesario para empezar; lo opcional puedes dejarlo para luego.</p>
+      </header>
+      <div class="setup-body">
+        <label class="setup-name">
+          <span class="field-label">¿Cómo te llamas?</span>
+          <input name="userName" placeholder="Tu nombre (para el saludo)" autocomplete="off" spellcheck="false">
+        </label>
+        <h3>Necesario</h3>
+        <div class="setup-list" id="setup-required"></div>
+        <h3>Opcional</h3>
+        <div class="setup-list" id="setup-optional"></div>
+      </div>
+      <footer>
+        <button type="button" class="btn ghost" id="setup-recheck">Volver a comprobar</button>
+        <span class="setup-gap"></span>
+        <button type="button" class="btn" id="setup-preset">Crear mi primer preset</button>
+        <button type="button" class="btn primary" id="setup-done">Empezar</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <dialog id="settings">
+    <form id="settings-form" method="dialog">
+      <nav class="settings-nav">
+        <h2>Configuración</h2>
+        <button type="button" data-tab="general" class="active">General</button>
+        <button type="button" data-tab="look">Apariencia</button>
+        <button type="button" data-tab="account">Cuenta</button>
+        <button type="button" data-tab="model">Modelo</button>
+        <button type="button" data-tab="access">Acceso al equipo</button>
+        <button type="button" data-tab="presets">Presets</button>
+        <button type="button" data-tab="ext">Conectores</button>
+        <button type="button" data-tab="sched">Programadas</button>
+        <button type="button" data-tab="memory">Memoria</button>
+      </nav>
+
+      <div class="settings-body">
+        <section data-panel="general" class="active">
+          <h3>General</h3>
+          <div class="field">
+            <span class="field-label">¿Cómo te llamo?</span>
+            <input name="userName" placeholder="Tu nombre">
+          </div>
+          <div class="field">
+            <span class="field-label">Tema</span>
+            <div class="segmented">
+              <label><input type="radio" name="theme" value="system"><span>Sistema</span></label>
+              <label><input type="radio" name="theme" value="light"><span>Claro</span></label>
+              <label><input type="radio" name="theme" value="dark"><span>Oscuro</span></label>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label">Atajo global para mostrar u ocultar</span>
+            <input name="hotkey" placeholder="Control+Shift+Space">
+          </div>
+          <label class="switch-row">
+            <span><span class="field-label">Iniciar con el sistema</span><span class="field-help">Arranca minimizada en la <span class="os-tray">bandeja del sistema</span>.</span></span>
+            <input type="checkbox" name="autoStart" class="switch">
+          </label>
+          <h3>Notificaciones</h3>
+          <p class="field-help">Avisos del sistema cuando la ventana no está delante.</p>
+          <label class="switch-row">
+            <span><span class="field-label">Cuando Claude termina</span></span>
+            <input type="checkbox" name="notifyDone" class="switch">
+          </label>
+          <label class="switch-row">
+            <span><span class="field-label">Cuando pregunta o pide permiso</span><span class="field-help">Preguntas, planes listos y permisos.</span></span>
+            <input type="checkbox" name="notifyAsk" class="switch">
+          </label>
+          <label class="switch-row">
+            <span><span class="field-label">Tareas programadas</span><span class="field-help">Al terminar cada una.</span></span>
+            <input type="checkbox" name="notifyScheduled" class="switch">
+          </label>
+          <label class="switch-row">
+            <span><span class="field-label">Con sonido</span></span>
+            <input type="checkbox" name="notifySound" class="switch">
+          </label>
+          <h3>Asistente por voz</h3>
+          <p class="field-help">Con el atajo, desde cualquier aplicación: aparece Claude arriba a la izquierda, escucha lo que pides y, al callarte, lo envía y trabaja en segundo plano. La respuesta sale en el mismo bocadillo.</p>
+          <div class="row">
+            <div class="field" style="flex:1">
+              <span class="field-label">Atajo para preguntar</span>
+              <input name="voiceHotkey" placeholder="Control+Alt+Space">
+            </div>
+            <div class="field" style="flex:1">
+              <span class="field-label">Atajo para algo de la pantalla</span>
+              <input name="shotHotkey" placeholder="Control+Alt+S">
+            </div>
+          </div>
+          <span class="field-help">El de pantalla deja antes recortar una zona (como Impr. Pant.) y la adjunta a lo que pidas. Un clic sin arrastrar sigue sin imagen, como el de preguntar.</span>
+          <div class="field">
+            <span class="field-label">Preset de sus pestañas</span>
+            <select name="voicePreset"></select>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1">
+              <span class="field-label">Modelo de la voz</span>
+              <select name="voiceModel">
+                <option value="">El del preset</option>
+                <option value="haiku">Haiku (lo más barato)</option>
+                <option value="sonnet">Sonnet</option>
+                <option value="opus">Opus</option>
+              </select>
+            </div>
+            <div class="field" style="flex:1">
+              <span class="field-label">Effort de la voz</span>
+              <select name="voiceEffort">
+                <option value="">El del preset</option>
+                <option value="low">Bajo</option>
+                <option value="medium">Medio</option>
+                <option value="high">Alto</option>
+              </select>
+            </div>
+          </div>
+          <span class="field-help">Lo que pides por voz suele ser corto: Sonnet o Haiku con effort bajo gastan mucho menos plan que Opus.</span>
+          <h3>WhatsApp en segundo plano</h3>
+          <p class="field-help">Los presets con WhatsApp activado lo usan dentro de la app, sin quitarte el foco. Vincúlalo una vez escaneando el QR desde el móvil (WhatsApp › Dispositivos vinculados).</p>
+          <div class="field">
+            <span class="field-label">Mientras trabaja</span>
+            <div class="row">
+              <select name="whatsappView">
+                <option value="hidden">Oculto</option>
+                <option value="second">Se ve en la segunda pantalla, sin quitarte el foco</option>
+              </select>
+              <button type="button" class="btn" id="show-whatsapp">Vincular o ver</button>
+            </div>
+          </div>
+        </section>
+
+        <section data-panel="look">
+          <h3>Apariencia</h3>
+          <div class="look-preview">Así se verán las respuestas de Claude, con <code>código en línea</code> y párrafos con su interlineado.</div>
+          <div class="field">
+            <span class="field-label">Colores</span>
+            <div class="palettes">
+              <label><input type="radio" name="lookPalette" value="claude"><span style="--sw:#d97757">Claude</span></label>
+              <label><input type="radio" name="lookPalette" value="oceano"><span style="--sw:#2f6fb8">Océano</span></label>
+              <label><input type="radio" name="lookPalette" value="bosque"><span style="--sw:#2f7d4f">Bosque</span></label>
+              <label><input type="radio" name="lookPalette" value="lavanda"><span style="--sw:#6f52c0">Lavanda</span></label>
+              <label><input type="radio" name="lookPalette" value="rosa"><span style="--sw:#bf4578">Rosa</span></label>
+              <label><input type="radio" name="lookPalette" value="ambar"><span style="--sw:#a8650f">Ámbar</span></label>
+              <label><input type="radio" name="lookPalette" value="grafito"><span style="--sw:#4b5563">Grafito</span></label>
+              <label><input type="radio" name="lookPalette" value="custom"><span style="--sw:conic-gradient(#e5484d,#f5a524,#46a758,#3e63dd,#8e4ec6,#e5484d)">Personalizado</span></label>
+              <input type="color" name="lookAccent" class="palette-custom" title="Color de la paleta personalizada">
+            </div>
+            <span class="field-help">Se combinan con el tema claro u oscuro de General.</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Imagen de fondo</span>
+            <div class="bg-row">
+              <span class="bg-thumb" id="bg-thumb"></span>
+              <button type="button" class="btn sm" id="bg-pick">Elegir imagen…</button>
+              <button type="button" class="btn sm" id="bg-clear">Quitar</button>
+            </div>
+            <div class="bg-opts">
+              <span class="field-help">Visibilidad de la imagen</span>
+              <div class="range-row"><input type="range" name="lookBgOpacity" min="0.05" max="1" step="0.05"><output data-for="lookBgOpacity"></output></div>
+              <span class="field-help">Difuminado</span>
+              <div class="range-row"><input type="range" name="lookBgBlur" min="0" max="40" step="1"><output data-for="lookBgBlur"></output></div>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label">Tamaño del texto del chat</span>
+            <div class="range-row"><input type="range" name="lookFontSize" min="12" max="22" step="0.5"><output data-for="lookFontSize"></output></div>
+          </div>
+          <div class="field">
+            <span class="field-label">Interlineado</span>
+            <div class="range-row"><input type="range" name="lookLineHeight" min="1.3" max="2.1" step="0.05"><output data-for="lookLineHeight"></output></div>
+          </div>
+          <div class="field">
+            <span class="field-label">Ancho de la conversación</span>
+            <div class="range-row"><input type="range" name="lookWidth" min="568" max="1648" step="40"><output data-for="lookWidth"></output></div>
+            <span class="field-help">Al máximo, el texto ocupa toda la ventana.</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Márgenes laterales</span>
+            <div class="range-row"><input type="range" name="lookPad" min="8" max="120" step="4"><output data-for="lookPad"></output></div>
+          </div>
+          <div class="field">
+            <span class="field-label">Tipografía de las respuestas</span>
+            <div class="font-row">
+              <div class="segmented">
+                <label><input type="radio" name="lookChatFont" value="sans"><span>Sin serifa</span></label>
+                <label><input type="radio" name="lookChatFont" value="serif"><span>Serifa</span></label>
+                <label><input type="radio" name="lookChatFont" value="mono"><span>Monoespaciada</span></label>
+                <label><input type="radio" name="lookChatFont" value="custom"><span>Otra</span></label>
+              </div>
+              <input type="text" name="lookChatFontName" list="look-fonts" placeholder="Nombre de la fuente instalada">
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label">Tipografía de la interfaz</span>
+            <input type="text" name="lookUiFont" list="look-fonts" placeholder="La de las respuestas">
+          </div>
+          <div class="field">
+            <span class="field-label">Tipografía del código y la terminal</span>
+            <input type="text" name="lookMonoFont" list="look-mono-fonts" placeholder="Cascadia Code">
+          </div>
+          <div class="field">
+            <span class="field-label">Tamaño de la terminal</span>
+            <div class="range-row"><input type="range" name="lookTermSize" min="10" max="24" step="1"><output data-for="lookTermSize"></output></div>
+          </div>
+          <div class="field">
+            <span class="field-label">Zoom de toda la interfaz</span>
+            <div class="range-row"><input type="range" name="lookZoom" min="0.75" max="1.5" step="0.05"><output data-for="lookZoom"></output></div>
+            <span class="field-help">También con Ctrl + rueda del ratón, Ctrl + +, Ctrl + - y Ctrl + 0.</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Tema del código</span>
+            <div class="code-themes">
+              <label><input type="radio" name="lookCode" value="claude"><span>Claude</span></label>
+              <label><input type="radio" name="lookCode" value="github"><span>GitHub</span></label>
+              <label><input type="radio" name="lookCode" value="nord"><span>Nord</span></label>
+              <label><input type="radio" name="lookCode" value="solarized"><span>Solarized</span></label>
+              <label><input type="radio" name="lookCode" value="monokai"><span>Monokai</span></label>
+              <label><input type="radio" name="lookCode" value="dracula"><span>Dracula</span></label>
+            </div>
+            <div class="code-sample" id="code-sample"></div>
+          </div>
+          <div class="field">
+            <span class="field-label">Vista de la conversación</span>
+            <div class="segmented">
+              <label><input type="radio" name="lookTranscript" value="normal"><span>Normal</span></label>
+              <label><input type="radio" name="lookTranscript" value="thinking"><span>Con el razonamiento</span></label>
+              <label><input type="radio" name="lookTranscript" value="verbose"><span>Detallada</span></label>
+            </div>
+            <span class="field-help">Normal pliega el trabajo intermedio; Detallada lo despliega todo. Ctrl + O la cambia solo en la pestaña actual, como el modo detallado de Claude Code.</span>
+          </div>
+          <label class="switch-row">
+            <span><span class="field-label">Reducir movimiento</span><span class="field-help">Sin animaciones ni transiciones.</span></span>
+            <input type="checkbox" name="lookReduceMotion" class="switch">
+          </label>
+          <div><button type="button" class="btn sm" id="look-reset">Restablecer apariencia</button></div>
+          <datalist id="look-fonts"></datalist>
+          <datalist id="look-mono-fonts"></datalist>
+        </section>
+
+        <section data-panel="account">
+          <h3>Cuenta</h3>
+          <div class="cards">
+            <label class="card-radio"><input type="radio" name="authMode" value="claude-code">
+              <span class="card-title">Sesión de Claude Code</span>
+              <span class="card-desc">Tu cuenta de Claude, la misma que en la terminal. Puedes tener varias y cambiar entre ellas. Recomendado.</span></label>
+            <label class="card-radio"><input type="radio" name="authMode" value="oauth-token">
+              <span class="card-title">Token OAuth</span>
+              <span class="card-desc">Un token de larga duración generado con <code>claude setup-token</code>.</span></label>
+            <label class="card-radio"><input type="radio" name="authMode" value="api-key">
+              <span class="card-title">API key</span>
+              <span class="card-desc">Facturación por uso desde Anthropic Console.</span></label>
+          </div>
+          <div class="field secret" data-for="claude-code">
+            <span class="field-label">Cuentas</span>
+            <div class="accounts" id="account-list"></div>
+            <div class="row"><button type="button" class="btn" id="add-account">Iniciar sesión con otra cuenta…</button></div>
+            <span class="field-help">Cambiar de cuenta es como <code>/login</code> en la terminal: vale también para Claude Code fuera de la app. Las pestañas abiertas pasan a la nueva en su siguiente mensaje.</span>
+          </div>
+          <div class="field secret" data-for="oauth-token">
+            <span class="field-label">Token OAuth <span class="status" id="oauth-status"></span></span>
+            <div class="row"><input type="password" name="oauthToken" placeholder="sk-ant-oat01-…" autocomplete="off"><button type="button" class="btn" data-clear="clearOauthToken">Borrar</button></div>
+          </div>
+          <div class="field secret" data-for="api-key">
+            <span class="field-label">API key <span class="status" id="apikey-status"></span></span>
+            <div class="row"><input type="password" name="apiKey" placeholder="sk-ant-api03-…" autocomplete="off"><button type="button" class="btn" data-clear="clearApiKey">Borrar</button></div>
+          </div>
+          <p class="field-help">Los tokens se guardan cifrados con tu usuario del sistema y nunca se muestran de nuevo. Los cambios se aplican a las pestañas nuevas.</p>
+        </section>
+
+        <section data-panel="model">
+          <h3>Modelo</h3>
+          <div class="field">
+            <span class="field-label">Modelo por defecto para pestañas nuevas</span>
+            <select name="model" id="cfg-model"></select>
+            <span class="field-help">En cada pestaña puedes cambiarlo desde el cuadro de texto o con <code>/model</code>.</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Esfuerzo de razonamiento</span>
+            <div class="segmented">
+              <label><input type="radio" name="effort" value=""><span>Auto</span></label>
+              <label><input type="radio" name="effort" value="low"><span>Bajo</span></label>
+              <label><input type="radio" name="effort" value="medium"><span>Medio</span></label>
+              <label><input type="radio" name="effort" value="high"><span>Alto</span></label>
+              <label><input type="radio" name="effort" value="xhigh"><span>Muy alto</span></label>
+              <label><input type="radio" name="effort" value="max"><span>Máx.</span></label>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label">Compactar la conversación al llegar a (miles de tokens)</span>
+            <input name="compactWindow" type="number" min="0" max="1000" step="50" placeholder="Máximo del modelo">
+            <span class="field-help">Cada respuesta vuelve a leer toda la conversación, así que compactar antes gasta mucho menos. De 100 a 1000; vacío = el máximo de cada modelo (1M con Opus, Sonnet y Fable 5; 200k con Haiku). Se aplica a las pestañas nuevas.</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Instrucciones personalizadas</span>
+            <textarea name="systemPrompt" rows="4" placeholder="Se añaden al prompt de sistema de Claude Code. Vacío = exactamente igual que la terminal."></textarea>
+          </div>
+        </section>
+
+        <section data-panel="presets">
+          <h3>Presets</h3>
+          <p class="field-help" style="margin:-10px 0 14px">Al abrir una pestaña eliges con cuál empezar, como los perfiles de Chrome. Arrastra para cambiar el orden (las teclas 1–9 siguen ese orden).</p>
+          <div id="preset-list"></div>
+          <button type="button" class="btn" id="preset-add">+ Nuevo preset</button>
+        </section>
+
+        <section data-panel="ext">
+          <h3>Conectores, skills y plugins</h3>
+          <p class="field-help" style="margin:-10px 0 4px">Lo que tienes conectado en Claude Code. Lo que apagues aquí no lo carga ningún preset (ahorras contexto); cada preset lo ajusta para sí en su editor. Vale para las pestañas que abras a partir de ahora.</p>
+          <label class="switch-row">
+            <span><span class="field-label">Pestañas en blanco sin conectores ni plugins</span><span class="field-help">Para dudas generales: arrancan antes y no gastan contexto en herramientas. Si alguna vez hace falta, se enciende uno solo en esa pestaña con el «+» del chat.</span></span>
+            <input type="checkbox" name="blankBare" class="switch">
+          </label>
+          <div class="tl-head">
+            <input type="search" id="ext-q" class="tl-search" placeholder="Buscar conector, plugin o skill…" spellcheck="false">
+            <button type="button" class="btn sm" id="ext-refresh">Actualizar</button>
+          </div>
+          <div id="ext-panel" class="tl-list"></div>
+          <details class="ext-add" id="mcp-add">
+            <summary>+ Añadir servidor MCP</summary>
+            <div class="field"><span class="field-label">Nombre</span><input id="mcp-name" placeholder="p. ej. github" spellcheck="false"></div>
+            <div class="field"><span class="field-label">Configuración (JSON)</span>
+              <textarea id="mcp-json" rows="4" spellcheck="false" placeholder='{ "command": "npx", "args": ["-y", "paquete-mcp"] }  o  { "type": "http", "url": "https://…/mcp" }'></textarea>
+              <span class="field-help">Se añade a tu Claude Code (ámbito usuario), como <code>claude mcp add-json</code>: también lo verás en la terminal.</span></div>
+            <div class="row ext-add-foot"><span id="mcp-msg" class="field-help"></span><button type="button" class="btn primary" id="mcp-save">Añadir</button></div>
+          </details>
+        </section>
+
+        <section data-panel="sched">
+          <h3>Tareas programadas</h3>
+          <p class="field-help" style="margin:-10px 0 14px">A su hora, la app abre una pestaña con el preset elegido y le manda el prompt; al terminar te avisa y el resultado queda en esa pestaña. Funcionan mientras la app está abierta (también en la bandeja); si estaba cerrada a su hora, se lanzan al abrirla, como mucho 12 h después.</p>
+          <div id="sched-list" class="sched-list"></div>
+          <div id="sched-edit" class="sched-edit" hidden>
+            <div class="row">
+              <div class="field" style="flex:1"><span class="field-label">Nombre</span><input id="sched-name" placeholder="p. ej. Resumen del correo"></div>
+              <div class="field" style="flex:1"><span class="field-label">Preset</span><select id="sched-preset"></select></div>
+            </div>
+            <div class="field"><span class="field-label">Prompt</span><textarea id="sched-prompt" rows="4" placeholder="Lo que Claude debe hacer cada vez"></textarea></div>
+            <div class="field">
+              <span class="field-label">Cuándo</span>
+              <div class="segmented">
+                <label><input type="radio" name="schedMode" value="days"><span>Días y hora</span></label>
+                <label><input type="radio" name="schedMode" value="every"><span>Cada cierto tiempo</span></label>
+              </div>
+            </div>
+            <div class="sched-when" data-mode="days">
+              <div class="sched-days" id="sched-days"></div>
+              <input type="time" id="sched-time" value="09:00">
+            </div>
+            <div class="sched-when" data-mode="every">
+              <span>Cada</span><input type="number" id="sched-every" min="5" step="5" value="60"><span>minutos</span>
+            </div>
+            <div class="row sched-foot"><span id="sched-msg" class="field-help"></span><button type="button" class="btn" id="sched-cancel">Cancelar</button><button type="button" class="btn primary" id="sched-save">Guardar tarea</button></div>
+          </div>
+          <div><button type="button" class="btn sm" id="sched-add">+ Nueva tarea</button></div>
+        </section>
+
+        <section data-panel="memory">
+          <h3>Memoria</h3>
+          <p class="field-help" style="margin:-10px 0 14px">Lo que Claude Code recuerda entre conversaciones: la memoria automática de cada carpeta de trabajo (<code>MEMORY.md</code> es el índice que se carga al empezar cada sesión; cada recuerdo, un fichero) y las instrucciones que valen para todas. Los cambios cuentan desde la siguiente conversación.</p>
+          <div class="field"><span class="field-label">Carpeta</span><select id="mem-project"></select></div>
+          <div class="mem-wrap">
+            <div id="mem-files" class="mem-files"></div>
+            <div class="mem-editor">
+              <textarea id="mem-text" spellcheck="false" placeholder="Vacío"></textarea>
+              <div class="row sched-foot"><span id="mem-msg" class="field-help"></span><button type="button" class="btn" id="mem-del">Eliminar</button><button type="button" class="btn primary" id="mem-save">Guardar</button></div>
+            </div>
+          </div>
+        </section>
+
+        <section data-panel="access">
+          <h3>Acceso al equipo</h3>
+          <p class="field-help" style="margin:-10px 0 14px">Modo por defecto de las pestañas nuevas. En cada pestaña puedes cambiarlo con <kbd>Shift+Tab</kbd>.</p>
+          <div class="cards">
+            <label class="card-radio"><input type="radio" name="permissionMode" value="bypassPermissions">
+              <span class="card-title">Acceso total</span>
+              <span class="card-desc">Ejecuta comandos y modifica archivos sin preguntar.</span></label>
+            <label class="card-radio"><input type="radio" name="permissionMode" value="acceptEdits">
+              <span class="card-title">Editar libremente</span>
+              <span class="card-desc">Edita archivos sin preguntar; pide permiso para lo demás.</span></label>
+            <label class="card-radio"><input type="radio" name="permissionMode" value="default">
+              <span class="card-title">Preguntar siempre</span>
+              <span class="card-desc">Te pide confirmación antes de cada acción.</span></label>
+            <label class="card-radio"><input type="radio" name="permissionMode" value="plan">
+              <span class="card-title">Modo plan</span>
+              <span class="card-desc">Investiga y propone un plan; no toca nada hasta que lo apruebes.</span></label>
+          </div>
+          <div class="field">
+            <span class="field-label">Carpeta de trabajo por defecto</span>
+            <div class="row"><input name="cwd"><button type="button" class="btn" id="pick-cwd">Elegir…</button></div>
+            <span class="field-help">Cada pestaña puede usar su propia carpeta antes de enviar el primer mensaje.</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Ejecutable de Claude Code</span>
+            <div class="row"><input name="claudePath" placeholder="Vacío = el incluido en la app (2.1.288)"><button type="button" class="btn" id="pick-claude">Elegir…</button></div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="settings-foot">
+        <p id="settings-msg"></p>
+        <button type="button" class="btn" id="settings-cancel">Cancelar</button>
+        <button type="submit" class="btn primary">Guardar</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <script src="../node_modules/marked/lib/marked.umd.js"></script>
+  <script src="../node_modules/dompurify/dist/purify.min.js"></script>
+  <script src="../node_modules/@highlightjs/cdn-assets/highlight.min.js"></script>
+  <script src="../node_modules/@highlightjs/cdn-assets/languages/powershell.min.js"></script>
+  <script src="../node_modules/@highlightjs/cdn-assets/languages/dos.min.js"></script>
+  <script src="../node_modules/katex/dist/katex.min.js"></script>
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
+  <script src="../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="spark.js"></script>
+  <script src="terminal.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

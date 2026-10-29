@@ -1,0 +1,135 @@
+/* ============ Apariencia (Configuración → Apariencia) ============
+   Las variables las fija applyAppearance() en app.js; aquí, los valores por defecto (los de siempre). */
+:root {
+  --chat-fs: 15px;          /* texto de las respuestas; lo demás del chat va en proporción */
+  --chat-lh: 1.7;
+  --chat-font: var(--sans);
+  --chat-w: 768px;          /* ancho máximo de la columna del chat */
+  --chat-pad: 28px;         /* margen lateral mínimo */
+}
+@media (max-width: 900px) { :root:not(.custom-pad) { --chat-pad: 18px; } }
+
+.msg-assistant { font-family: var(--chat-font); font-size: var(--chat-fs); line-height: var(--chat-lh); }
+.md h1, .md h2, .md h3, .md h4 { font-family: var(--chat-font); }
+.bubble { font-size: var(--chat-fs); line-height: calc(var(--chat-lh) - .1); }
+.bubble.cmd { font-size: calc(var(--chat-fs) * .9); }
+.codeblock pre { font-size: calc(var(--chat-fs) * .867); }
+.md table { font-size: calc(var(--chat-fs) * .9); }
+.step-text .md { font-size: calc(var(--chat-fs) * .9); }
+
+#thread { max-width: var(--chat-w); padding-left: var(--chat-pad); padding-right: var(--chat-pad); }
+#prompts, #working { max-width: var(--chat-w); padding-left: var(--chat-pad); padding-right: var(--chat-pad); }
+#dock { padding-left: var(--chat-pad); padding-right: var(--chat-pad); }
+#composer, .is-empty #suggestions, #queue, #tasks { max-width: calc(var(--chat-w) - 2 * var(--chat-pad)); }
+
+/* Controles de la pestaña */
+.range-row { display: flex; align-items: center; gap: 12px; }
+.settings-body .range-row input[type=range] { flex: 1; width: auto; height: auto; padding: 0; border: 0; background: none; box-shadow: none; accent-color: var(--accent); }
+.range-row output { min-width: 64px; text-align: right; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.font-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.font-row input[type=text] { flex: 1; min-width: 160px; }
+.look-preview {
+  position: sticky; top: -26px; z-index: 1; margin-bottom: 4px; box-shadow: 0 -26px 0 0 var(--bg);
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; background: var(--bg);
+  font-family: var(--chat-font); font-size: var(--chat-fs); line-height: var(--chat-lh); color: var(--text-2);
+}
+.look-preview code { font-size: .86em; padding: .12em .4em; border-radius: 5px; background: var(--code-bg); }
+
+/* ============ Paletas de colores (data-palette en <html>; «claude» = la de siempre, sin atributo) ============
+   Cada paleta da un tinte (--tint) y un acento; los fondos se mezclan con el tinte sobre una base neutra. */
+:root[data-palette] {
+  --bg: color-mix(in oklab, #fafaf9 95%, var(--tint));
+  --side: color-mix(in oklab, #f3f3f1 91%, var(--tint));
+  --surface: color-mix(in oklab, #ffffff 97%, var(--tint));
+  --raised: color-mix(in oklab, #ededea 88%, var(--tint));
+  --titlebar: color-mix(in oklab, #e8e8e4 86%, var(--tint));
+  --user-bubble: color-mix(in oklab, #eeeeeb 88%, var(--tint));
+  --code-bg: color-mix(in oklab, #f2f2ef 92%, var(--tint));
+  --accent: var(--accent-l);
+  --accent-hover: color-mix(in oklab, var(--accent) 85%, black);
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --code-inline: color-mix(in oklab, var(--accent) 80%, black);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-palette] {
+    --bg: color-mix(in oklab, #242526 92%, var(--tint));
+    --side: color-mix(in oklab, #1d1e1f 92%, var(--tint));
+    --surface: color-mix(in oklab, #2e2f31 92%, var(--tint));
+    --raised: color-mix(in oklab, #38393b 90%, var(--tint));
+    --titlebar: color-mix(in oklab, #19191a 92%, var(--tint));
+    --user-bubble: color-mix(in oklab, #19191a 90%, var(--tint));
+    --code-bg: color-mix(in oklab, #1d1e1f 92%, var(--tint));
+    --accent: var(--accent-d);
+    --accent-hover: color-mix(in oklab, var(--accent) 85%, white);
+    --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+    --code-inline: color-mix(in oklab, var(--accent) 65%, white);
+  }
+}
+:root[data-palette="oceano"]   { --tint: #2b6cb0; --accent-l: #2f6fb8; --accent-d: #5b9be0; }
+:root[data-palette="bosque"]   { --tint: #2f7d4f; --accent-l: #2f7d4f; --accent-d: #5fb683; }
+:root[data-palette="lavanda"]  { --tint: #7357c2; --accent-l: #6f52c0; --accent-d: #a48bea; }
+:root[data-palette="rosa"]     { --tint: #c2477a; --accent-l: #bf4578; --accent-d: #ec7aa8; }
+:root[data-palette="ambar"]    { --tint: #b7791f; --accent-l: #a8650f; --accent-d: #e6a74a; }
+:root[data-palette="grafito"]  { --tint: #5b6470; --accent-l: #4b5563; --accent-d: #9aa5b4; }
+/* «custom»: --tint y --accent-l los pone applyAppearance con el color elegido */
+:root[data-palette="custom"]   { --accent-d: color-mix(in oklab, var(--accent-l) 75%, white); }
+
+/* ============ Imagen de fondo ============
+   Una capa fija detrás de todo, difuminada y tenue sobre el color de fondo; la terminal sigue opaca. */
+body.has-bg::before {
+  content: ""; position: fixed; z-index: -1; pointer-events: none;
+  inset: calc(var(--bg-blur, 12px) * -2); /* sin bordes claros al difuminar */
+  background: var(--bg-image) center / cover no-repeat;
+  filter: blur(var(--bg-blur, 12px)); opacity: var(--bg-opacity, .3);
+}
+/* En el tema claro, una foto oscura a la misma opacidad deja en gris medio el fondo y los textos tenues sin contraste */
+@media (prefers-color-scheme: light) { body.has-bg::before { opacity: calc(var(--bg-opacity, .3) * .55); } }
+body.has-bg #dock::before { display: none; } /* su degradado de color taparía la imagen */
+
+/* Selector de paleta */
+.palettes { display: flex; flex-wrap: wrap; gap: 8px; }
+.palettes label { cursor: pointer; }
+.palettes input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }
+.palettes span {
+  display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px 6px 7px; border-radius: 999px;
+  border: 1px solid var(--border-strong); font-size: 13px; color: var(--text-2); transition: border-color .15s, background .15s;
+}
+.palettes span::before { content: ""; width: 16px; height: 16px; border-radius: 50%; background: var(--sw); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .12); }
+.palettes label:hover span { color: var(--text); }
+.palettes input:checked + span { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.palettes input:focus-visible + span { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
+.settings-body .palettes input.palette-custom { flex: none; align-self: center; width: 34px; height: 30px; padding: 0 2px; border: 1px solid var(--border-strong); border-radius: 8px; background: none; cursor: pointer; }
+.bg-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bg-thumb { width: 72px; height: 44px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--raised) center / cover no-repeat; flex: none; }
+
+/* ============ Tema del código (data-code en <html>; «claude» = el de siempre, sin atributo) ============
+   Los claros cambian solo los colores del resaltado; los oscuros fijos (Monokai, Dracula) también el fondo de los bloques. */
+:root[data-code="github"] { --hl-keyword: #cf222e; --hl-string: #0a3069; --hl-number: #0550ae; --hl-comment: #6e7781; --hl-title: #8250df; --hl-builtin: #953800; --hl-attr: #0550ae; }
+:root[data-code="nord"] { --hl-keyword: #5e81ac; --hl-string: #4f7a3a; --hl-number: #9a5b8f; --hl-comment: #8a93a3; --hl-title: #3b7a8c; --hl-builtin: #4c6a92; --hl-attr: #a3623a; }
+:root[data-code="solarized"] { --hl-keyword: #859900; --hl-string: #2aa198; --hl-number: #d33682; --hl-comment: #93a1a1; --hl-title: #268bd2; --hl-builtin: #b58900; --hl-attr: #cb4b16; }
+@media (prefers-color-scheme: dark) {
+  :root[data-code="github"] { --hl-keyword: #ff7b72; --hl-string: #a5d6ff; --hl-number: #79c0ff; --hl-comment: #8b949e; --hl-title: #d2a8ff; --hl-builtin: #ffa657; --hl-attr: #79c0ff; }
+  :root[data-code="nord"] { --hl-keyword: #81a1c1; --hl-string: #a3be8c; --hl-number: #b48ead; --hl-comment: #6f7a8f; --hl-title: #88c0d0; --hl-builtin: #8fbcbb; --hl-attr: #d08770; }
+  :root[data-code="solarized"] { --hl-comment: #657b83; }
+}
+:root[data-code="monokai"] { --hl-keyword: #f92672; --hl-string: #e6db74; --hl-number: #ae81ff; --hl-comment: #88846f; --hl-title: #a6e22e; --hl-builtin: #66d9ef; --hl-attr: #fd971f; --code-block: #272822; }
+:root[data-code="dracula"] { --hl-keyword: #ff79c6; --hl-string: #f1fa8c; --hl-number: #bd93f9; --hl-comment: #6272a4; --hl-title: #50fa7b; --hl-builtin: #8be9fd; --hl-attr: #ffb86c; --code-block: #282a36; }
+:root[data-code="monokai"] .codeblock, :root[data-code="dracula"] .codeblock { background: var(--code-block); border-color: transparent; }
+:root[data-code="monokai"] .codeblock pre, :root[data-code="dracula"] .codeblock pre { color: #f8f8f2; }
+:root[data-code="monokai"] .code-head, :root[data-code="dracula"] .code-head { border-color: rgba(255, 255, 255, .08); color: #a9a79c; }
+:root[data-code="monokai"] .code-copy:hover, :root[data-code="dracula"] .code-copy:hover { background: rgba(255, 255, 255, .08); color: #f8f8f2; }
+.code-themes { display: flex; flex-wrap: wrap; gap: 6px; }
+.code-themes label { cursor: pointer; }
+.code-themes input { position: absolute; opacity: 0; pointer-events: none; }
+.code-themes span { display: inline-block; padding: 5px 12px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 13px; color: var(--text-2); }
+.code-themes input:checked + span { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.code-themes input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.code-sample { margin: 8px 0 0; }
+.code-sample .codeblock { margin: 0; }
+
+/* ============ Reducir movimiento ============ */
+:root.reduce-motion *, :root.reduce-motion *::before, :root.reduce-motion *::after {
+  animation-duration: 0.001ms !important; animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important; scroll-behavior: auto !important;
+}
+.code-sample pre code { background: none; border: 0; padding: 0; font-size: inherit; color: inherit; }

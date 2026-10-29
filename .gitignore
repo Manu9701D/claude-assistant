@@ -1,0 +1,6 @@
+node_modules/
+runtime/
+*.log
+dist/
+personal.mjs
+tools/personal.txt

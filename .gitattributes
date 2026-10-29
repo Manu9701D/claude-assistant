@@ -1,0 +1,3 @@
+# Scripts que se ejecutan en Linux y macOS: siempre con LF, aunque se saquen en Windows (core.autocrlf)
+*.sh text eol=lf
+terminal/ca text eol=lf

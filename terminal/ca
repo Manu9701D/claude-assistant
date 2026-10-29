@@ -1,0 +1,5 @@
+#!/bin/sh
+# Claude Assistant en la terminal (Linux y macOS): ver ca.mjs. Para tenerlo como «ca» en cualquier carpeta:
+#   ln -s "$PWD/terminal/ca" ~/.local/bin/ca
+dir=$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")
+exec node "$dir/ca.mjs" "$@"

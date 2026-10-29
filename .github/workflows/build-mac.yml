@@ -1,0 +1,26 @@
+# Compila Claude Assistant para macOS en los Mac de GitHub (Apple Silicon e Intel).
+# Se lanza a mano: Actions › «Compilar para macOS» › Run workflow. Los .dmg quedan en los artefactos de la ejecución.
+name: Compilar para macOS
+on: workflow_dispatch
+
+jobs:
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15 # Apple Silicon (arm64)
+          - runner: macos-15-intel # Intel (x64)
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node tools/build-mac.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claude-assistant-mac-${{ runner.arch }}
+          path: |
+            dist/*.dmg
+            dist/LEEME-mac.md

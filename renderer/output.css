@@ -1,0 +1,51 @@
+/* ============ Salida de Claude: más limpia y legible ============ */
+/* Texto de las respuestas: sin serifa, algo más pequeño y con más aire, como Claude Code de escritorio */
+.msg-assistant { font-family: var(--sans); font-size: 15px; line-height: 1.7; color: var(--text-2); }
+.md p { margin: 0 0 .8em; }
+.md strong { font-weight: 600; color: var(--text); }
+.md h1, .md h2, .md h3, .md h4 { font-family: var(--sans); font-weight: 600; letter-spacing: -0.005em; line-height: 1.35; margin: 1.5em 0 .5em; color: var(--text); }
+.md h1 { font-size: 1.3em; }
+.md h2 { font-size: 1.18em; }
+.md h3 { font-size: 1.06em; }
+.md h4 { font-size: 1em; color: var(--text-2); }
+.md ul, .md ol { padding-left: 1.4em; margin: .2em 0 .9em; }
+.md li { margin: .3em 0; padding-left: .15em; }
+.md li > ul, .md li > ol { margin: .3em 0 .2em; }
+.md li::marker { color: var(--faint); }
+.md ol > li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
+.md hr { margin: 1.4em 0; }
+.md blockquote { font-style: normal; border-left-width: 2px; border-left-color: var(--border-strong); }
+
+/* Código en línea discreto: sin borde ni color chillón */
+.md :not(pre) > code {
+  font-size: .86em; padding: .12em .4em; border: 0; border-radius: 5px;
+  background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text);
+}
+.md a > code { color: inherit; }
+
+/* Tablas un poco más compactas */
+.md table { font-size: 13.5px; }
+.md th, .md td { padding: 7px 13px; }
+
+/* Bloque de proceso: una sola ficha para todo el trabajo intermedio */
+.toolgroup.process { margin: 4px 0 18px; }
+.toolgroup.process > summary { padding: 8px 12px; }
+.process .tool-list { max-height: 460px; overflow-y: auto; }
+.process .tool-list::before { top: 18px; bottom: 18px; }
+.step-text { display: flex; gap: 10px; align-items: flex-start; padding: 5px 6px; }
+.step-text .tool-icon { margin-top: 1px; }
+.step-text .tool-icon svg { stroke-width: 1.8; }
+.step-text .md { font-size: 13.5px; line-height: 1.55; color: var(--text-2); min-width: 0; }
+.step-text .md p { margin: 0 0 .4em; }
+.step-text .md > :last-child { margin-bottom: 0; }
+.step-think .tool-preview { font-family: var(--sans); font-style: italic; font-size: 12.5px; }
+
+/* Textos secundarios también sin serifa */
+.thinking > .md, .tool-body .md, .plan-body, .sub-result { font-family: var(--sans); font-size: 14px; line-height: 1.6; }
+.prompt-title, #perm h2 { font-family: var(--sans); font-weight: 600; font-size: 16px; letter-spacing: 0; }
+
+/* Mensajes del usuario a juego */
+.bubble { font-size: 15px; line-height: 1.6; }
+
+/* Separación entre respuesta y estadísticas */
+.msg-assistant > .msg-actions { margin-top: 2px; }

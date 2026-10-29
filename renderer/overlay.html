@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self';">
+  <title>Claude · voz</title>
+  <link rel="stylesheet" href="overlay.css">
+</head>
+<body>
+  <div id="wrap">
+    <div id="orb" title="Claude"></div>
+    <div id="bubble">
+      <div id="head">
+        <span id="label"></span>
+        <button type="button" id="x" class="ghost" title="Cerrar (Esc)">
+          <svg viewBox="0 0 20 20"><path d="m5.5 5.5 9 9m0-9-9 9"/></svg>
+        </button>
+      </div>
+      <div id="text" spellcheck="true"></div>
+      <div id="answer" class="md" hidden></div>
+      <div id="foot">
+        <button type="button" id="shot" class="chip" hidden title="Se adjunta el recorte. Clic para quitarlo."><img alt=""><span>Recorte</span></button>
+        <span id="hint"></span>
+        <button type="button" id="open" class="chip" hidden>Abrir en la app</button>
+        <button type="button" id="send" class="send" hidden title="Enviar (Enter)">
+          <svg viewBox="0 0 20 20"><path d="M10 15.5V4.5M5 9.5l5-5 5 5"/></svg>
+        </button>
+      </div>
+      <div id="bar" hidden><i></i></div>
+    </div>
+  </div>
+  <script src="../node_modules/marked/lib/marked.umd.js"></script>
+  <script src="../node_modules/dompurify/dist/purify.min.js"></script>
+  <script src="spark.js"></script>
+  <script src="overlay.js"></script>
+</body>
+</html>
