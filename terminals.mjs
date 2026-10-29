@@ -207,5 +207,6 @@ export function createTerminals({ command, send, jobs, on = {} }) {
     list: () => [...tabs.values()].map((t) => t.conv),
     buffer: (id) => tabs.get(id)?.buffer || '',
     running: (id) => !!tabs.get(id)?.proc,
+    pid: (id) => tabs.get(id)?.proc?.pid || null,
   };
 }

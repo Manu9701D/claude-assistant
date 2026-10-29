@@ -105,6 +105,9 @@
             <button type="button" id="effort-chip" class="chip ghost-chip" title="Esfuerzo de razonamiento de esta pestaña"></button>
             <button type="button" id="mode-chip" class="chip ghost-chip" title="Modo de permisos (Shift+Tab)"></button>
             <span class="composer-hint" id="composer-hint"></span>
+            <button type="button" id="art-docs" class="icon-btn sm" hidden>
+              <svg viewBox="0 0 20 20"><path d="M11.5 2.5H5.5a1.5 1.5 0 0 0-1.5 1.5v12a1.5 1.5 0 0 0 1.5 1.5h9a1.5 1.5 0 0 0 1.5-1.5V7z"/><path d="M11.5 2.5V7H16M7 11h6M7 14h4"/></svg>
+            </button>
             <button type="button" id="term-view" class="icon-btn sm" title="Ver la terminal (Ctrl+º)" hidden>
               <svg viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="13" rx="2.5"/><path d="m6 8 2.5 2L6 12M10.5 12.5H14"/></svg>
             </button>
@@ -127,15 +130,18 @@
   <aside id="artifact" hidden>
     <div class="artifact-resize" title="Arrastra para cambiar el ancho"></div>
     <header class="artifact-head">
-      <span class="artifact-title"></span>
+      <button type="button" class="artifact-title"></button>
       <div class="artifact-tabs" role="tablist">
         <button data-art="view" role="tab">Vista</button><button data-art="code" role="tab">Código</button>
       </div>
       <button class="icon-btn" data-art="copy" title="Copiar"></button>
       <button class="icon-btn" data-art="save" title="Descargar"></button>
       <button class="icon-btn" data-art="window" title="Abrir en una ventana"></button>
+      <button class="icon-btn" data-art="folder" title="Mostrar en su carpeta"></button>
+      <button class="icon-btn" data-art="wide" title="Ampliar sobre el chat"></button>
       <button class="icon-btn" data-art="close" title="Cerrar (Esc)"></button>
     </header>
+    <div class="artifact-files" hidden></div>
     <div class="artifact-body"></div>
   </aside>
   </div>
@@ -252,6 +258,19 @@
         <button class="keys-close" value="close" title="Cerrar (Esc)"><svg viewBox="0 0 20 20"><path d="m5.5 5.5 9 9M14.5 5.5l-9 9"/></svg></button>
       </header>
       <div class="keys-body" id="keys-body" tabindex="-1" autofocus></div>
+    </form>
+  </dialog>
+
+  <!-- /tasks: lo que sigue en segundo plano (comandos y agentes), con su salida y para detenerlo -->
+  <dialog id="bg-dialog">
+    <form method="dialog" class="keys bgt">
+      <header>
+        <button type="button" class="keys-close" id="bg-back" title="Volver a la lista (Esc)" hidden><svg viewBox="0 0 20 20"><path d="M12.5 4.5 7 10l5.5 5.5"/></svg></button>
+        <h2 id="bg-heading">Tareas en segundo plano</h2>
+        <button class="keys-close" value="close" title="Cerrar (Esc)"><svg viewBox="0 0 20 20"><path d="m5.5 5.5 9 9M14.5 5.5l-9 9"/></svg></button>
+      </header>
+      <div class="bgt-body" id="bg-body" tabindex="-1"></div>
+      <footer class="bgt-hint" id="bg-hint"></footer>
     </form>
   </dialog>
 
@@ -382,6 +401,10 @@
           <label class="switch-row">
             <span><span class="field-label">Iniciar con el sistema</span><span class="field-help">Arranca minimizada en la <span class="os-tray">bandeja del sistema</span>.</span></span>
             <input type="checkbox" name="autoStart" class="switch">
+          </label>
+          <label class="switch-row">
+            <span><span class="field-label">Vista previa de lo que Claude edita</span><span class="field-help">Los documentos que crea o cambia (Word, Excel, PowerPoint, PDF, HTML, imágenes) se abren solos en el panel lateral y se actualizan en vivo.</span></span>
+            <input type="checkbox" name="autoPreview" class="switch">
           </label>
           <h3>Notificaciones</h3>
           <p class="field-help">Avisos del sistema cuando la ventana no está delante.</p>

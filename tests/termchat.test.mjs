@@ -141,8 +141,8 @@ test('a la interfaz solo viajan los mensajes que han podido cambiar', async () =
   tc.detach(id);
 });
 
-test('cola: espera a que Claude Code esté listo y se envía al quedar libre', async () => {
-  const { id, conv } = tab();
+test('cola: espera a que Claude Code esté listo; trabajando, pasa a la de Claude Code', async () => {
+  const { id, conv, append } = tab();
   typed.length = 0;
   tc.send(id, { text: 'Primero' });
   assert.equal(conv.queue.length, 1, 'aún sin título de la terminal: a la cola');
@@ -152,12 +152,29 @@ test('cola: espera a que Claude Code esté listo y se envía al quedar libre', a
   await until(() => typed.some(([, d]) => d === '\r'));
   assert.equal(conv.queue.length, 0);
 
-  // Trabajando: a la cola; con Esc vuelve al cuadro de texto
+  // Trabajando: se teclea ya (Claude Code lo deja en su cola), sin esperar al final del turno, y sigue
+  // en la cola hasta que Claude Code se lo pasa al modelo (queued_command)
   tc.setBusy(id, true);
+  typed.length = 0;
   tc.send(id, { text: 'Dos' });
   tc.send(id, { text: 'Tres' });
-  assert.equal(tc.unqueue(id, conv.queue[0].id), 'Dos');
-  assert.equal(tc.interrupt(id), 'Tres');
+  await until(() => typed.some(([, d]) => d.includes('Tres')));
+  await until(() => typed.at(-1)[1] === '\r');
+  assert.deepEqual(conv.queue.map((m) => [m.text, m.sent]), [['Dos', true], ['Tres', true]]);
+  append({ type: 'attachment', attachment: { type: 'queued_command', origin: { kind: 'human' }, prompt: 'Dos' } });
+  await until(() => conv.queue.length === 1);
+  assert.ok(conv.messages.some((m) => m.role === 'user' && m.text === 'Dos'), 'sale en el chat');
+
+  // Quitar uno que ya tenía Claude Code: ↑ sube su cola al campo y se vacía
+  typed.length = 0;
+  assert.equal(tc.unqueue(id, conv.queue[0].id), 'Tres');
+  assert.deepEqual(typed[0], [id, '\x1b[A']);
+  await until(() => typed.some(([, d]) => d.startsWith('\x15\x7f')));
+
+  // Los comandos esperan al final del turno; con Esc vuelven al cuadro de texto
+  tc.send(id, { text: '/cost' });
+  assert.equal(conv.queue[0].sent, undefined);
+  assert.equal(tc.interrupt(id), '/cost');
   assert.equal(conv.queue.length, 0);
 
   // Al terminar el turno, lo que quede en cola se envía
@@ -237,7 +254,7 @@ test('comandos en segundo plano: se siguen hasta su aviso, que sale en el chat',
     { ...assistant([{ type: 'tool_use', id: 'tb1', name: 'Bash', input: { command: 'sleep 9', description: 'Espera', run_in_background: true } }]), timestamp: now },
     { ...user([{ type: 'tool_result', tool_use_id: 'tb1', content: 'Command running in background with ID: bx1. Output is being written to: x.output' }]), timestamp: now },
   ]);
-  assert.deepEqual(conv.background.map((x) => [x.id, x.label]), [['bx1', 'Espera']]);
+  assert.deepEqual(conv.background.map((x) => [x.id, x.label, x.command, x.output]), [['bx1', 'Espera', 'sleep 9', 'x.output']]);
   const rest = tab([
     user('Lánzalo'),
     { ...assistant([{ type: 'tool_use', id: 'tb2', name: 'Bash', input: { command: 'sleep 9', description: 'Espera', run_in_background: true } }]), timestamp: now },
@@ -252,4 +269,47 @@ test('comandos en segundo plano: se siguen hasta su aviso, que sale en el chat',
     { ...user([{ type: 'tool_result', tool_use_id: 'tb3', content: 'Command running in background with ID: bx3.' }]), timestamp: '2020-01-01T00:00:00Z' },
   ]).conv;
   assert.deepEqual(old.background, []);
+});
+
+test('lo pegado se enseña sin las marcas <pasted_content> de Claude Code', () => {
+  const { conv } = tab([user('\n\n<pasted_content id="0cdf">\nLínea uno\nLínea dos\n</pasted_content id="0cdf">\n')]);
+  assert.equal(conv.messages[0].text, 'Línea uno\nLínea dos');
+  const mixed = tab([user('Mira esto:\n<pasted_content id="ab12">\ncódigo\n</pasted_content id="ab12">\n¿Qué opinas?')]).conv;
+  assert.equal(mixed.messages[0].text, 'Mira esto:\ncódigo\n¿Qué opinas?');
+});
+
+test('documentos que Claude crea o cambia: entran en conv.files para la vista previa', async () => {
+  const { touchedFiles } = await import('../termchat.mjs');
+  const cwd = path.join(ROOT, 'trabajo');
+  assert.deepEqual(touchedFiles('Write', { file_path: 'cv.docx' }, cwd), [path.join(cwd, 'cv.docx')]);
+  assert.deepEqual(touchedFiles('Bash', { command: 'python a.py && cp "mis docs/b c.pdf" out/x.xlsx; curl http://h/a.html; cat *.csv' }, cwd),
+    [path.join(cwd, 'mis docs/b c.pdf'), path.join(cwd, 'out/x.xlsx')]);
+  assert.deepEqual(touchedFiles('Write', { file_path: path.join(cwd, 'h.py'), content: "wb.save('ventas.xlsx')" }, cwd), [path.join(cwd, 'ventas.xlsx')]);
+  assert.deepEqual(touchedFiles('Read', { file_path: 'a.pdf' }, cwd), []);
+  // Un nombre suelto tras entrar en otra carpeta: se prueba también en ella
+  const otra = path.join(ROOT, 'otra');
+  assert.deepEqual(touchedFiles('Bash', { command: `D="${otra.replace(/\\/g, '/')}"\ncd "$D" && node g.cjs && ls -l gastos.xlsx` }, cwd),
+    [path.join(cwd, 'gastos.xlsx'), path.join(otra, 'gastos.xlsx')]);
+
+  // Un script que escribe un Excel: entra al cambiar el Excel, en la herramienta que lo ejecuta.
+  // Un PDF que solo se lee (no cambia) no entra
+  fs.mkdirSync(cwd, { recursive: true });
+  const xlsx = path.join(cwd, 'ventas.xlsx');
+  const pdf = path.join(cwd, 'viejo.pdf');
+  fs.writeFileSync(pdf, 'x');
+  fs.utimesSync(pdf, new Date('2020-01-01'), new Date('2020-01-01'));
+  const now = new Date().toISOString();
+  const { id, conv, append } = tab([]);
+  conv.cwd = cwd;
+  append(user('Hazme el Excel'));
+  append({ ...assistant([{ type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: path.join(cwd, 'hacer.py'), content: "wb.save('ventas.xlsx')" } }]), timestamp: now });
+  append({ ...user([{ type: 'tool_result', tool_use_id: 'w1', content: 'ok' }]), timestamp: now });
+  await sleep(300);
+  assert.deepEqual(conv.files || [], []);
+  fs.writeFileSync(xlsx, 'x');
+  append({ ...assistant([{ type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'python hacer.py; cat viejo.pdf' } }]), timestamp: now });
+  append({ ...user([{ type: 'tool_result', tool_use_id: 'b1', content: 'ok' }]), timestamp: now });
+  await until(() => conv.files?.length);
+  assert.deepEqual(conv.files.map((f) => f.path), [xlsx]);
+  tc.detach(id);
 });

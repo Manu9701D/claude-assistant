@@ -264,7 +264,7 @@ button.side-head:hover { background: var(--raised); color: var(--text-2); }
 /* ============ Panel de artefactos (a la derecha del chat) ============ */
 #shell { position: relative; }
 #artifact {
-  position: relative; flex: none; width: min(40vw, 720px); min-width: 300px; max-width: calc(100vw - 640px); /* que al chat le quede sitio para el compositor */
+  position: relative; flex: none; width: min(50vw, 1100px); min-width: 300px; max-width: calc(100vw - 640px); /* que al chat le quede sitio para el compositor */
   display: flex; flex-direction: column; min-height: 0; background: var(--surface); border-left: 1px solid var(--border);
 }
 #artifact[hidden] { display: none; }
@@ -898,3 +898,22 @@ body.split-left { width: calc(100vw * var(--split, 1)); }
 .split-left .toast { left: calc(50vw * var(--split, 1)); }
 .is-pane::after { content: ""; position: fixed; left: 0; top: 0; bottom: 0; width: 1px; background: var(--border-strong); z-index: 70; pointer-events: none; }
 .msg-actions .icon-btn.on { color: var(--accent); }
+
+/* Documentos en el panel (los que Claude crea o cambia) */
+button.artifact-title { text-align: left; padding: 3px 6px; margin-left: -6px; border-radius: 6px; cursor: default; }
+button.artifact-title.pick { cursor: pointer; }
+button.artifact-title.pick:hover { background: var(--raised); }
+button.artifact-title.pick::after { content: ''; display: inline-block; width: 6px; height: 6px; margin: 0 2px 3px 8px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.artifact-files { position: absolute; top: 46px; left: 10px; right: 10px; z-index: 5; max-height: min(60vh, 420px); overflow-y: auto; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: 0 10px 30px rgba(0, 0, 0, .18); }
+.artifact-files[hidden] { display: none; }
+.art-file { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "name at" "dir at"; gap: 0 12px; width: 100%; padding: 6px 10px; border-radius: 7px; text-align: left; }
+.art-file:hover { background: var(--raised); }
+.art-file.on { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.art-file-name { grid-area: name; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.art-file-dir { grid-area: dir; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.art-file-at { grid-area: at; align-self: center; font-size: 11.5px; color: var(--muted); }
+/* Ampliado: el panel ocupa el sitio del chat */
+#shell:has(#artifact.wide:not([hidden])) > main { display: none; }
+#artifact.wide { flex: 1; left: 0; width: auto !important; max-width: none; }
+#artifact.wide .artifact-resize { display: none; }
+#artifact.wide [data-art="wide"] svg { transform: rotate(180deg); }

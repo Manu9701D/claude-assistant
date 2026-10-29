@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { PREVIEW_EXT, extOf } from './docview.mjs';
 
 const PROJECTS = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
 const POLL_MS = 250; // mientras no se conoce el archivo o tras /clear; con fs.watch, solo de respaldo (×4)
@@ -68,6 +69,55 @@ const between = (text, tag) => {
   return m ? m[1] : null;
 };
 const clean = (s) => String(s || '').replace(ANSI, '').trim();
+// Documentos que una herramienta puede crear o cambiar: el archivo de Write/Edit y las rutas con una
+// extensión que se pueda ver (docx, xlsx, pdf, html…) en un comando o en el script que se escribe
+const SCRIPT_EXT = /\.(py|js|mjs|cjs|ts|ps1|psm1|sh|bash|rb|r|bat|cmd)$/i;
+const DOC_EXT = [...PREVIEW_EXT].join('|');
+const QUOTED_DOC = new RegExp(`(["'\`])([^"'\`\\n]{1,400}?\\.(?:${DOC_EXT}))\\1`, 'gi');
+const BARE_DOC = new RegExp(`(?:^|[\\s=(>])((?:[A-Za-z]:)?[^\\s"'\`<>|;,()=]{1,400}?\\.(?:${DOC_EXT}))(?=$|[\\s"'\`);,|&])`, 'gi');
+const ABS_PATH = /(?<![\w:/.\\-])(?:[A-Za-z]:[\\/]|~[\\/]|\/)[^\s"'`<>|;,()=$*?]*/g;
+const absolute = (p) => {
+  if (/^~[\\/]/.test(p)) return path.join(os.homedir(), p.slice(2));
+  if (process.platform === 'win32' && /^\/[a-z](\/|$)/i.test(p)) return `${p[1].toUpperCase()}:${p.slice(2) || '\\'}`;
+  return p;
+};
+export function touchedFiles(name, input, cwd) {
+  if (!input || typeof input !== 'object') return [];
+  const out = new Set();
+  // Un nombre suelto puede ser de la carpeta de la pestaña o de otra a la que se entra (cd "C:/…"):
+  // se prueba con todas las que salen; solo cuenta el que luego cambia de verdad
+  const bases = new Set(cwd ? [cwd] : []);
+  const add = (p) => {
+    p = String(p || '').trim().replace(/^file:\/\/\/?/i, '');
+    if (!p || p.includes('://') || /[*?<>|$]/.test(p) || !PREVIEW_EXT.has(extOf(p))) return;
+    p = absolute(p);
+    for (const f of path.isAbsolute(p) ? [p] : [...bases].map((b) => path.join(b, p))) {
+      const n = path.normalize(f);
+      if (!/[\\/](node_modules|\.git)[\\/]/.test(n)) out.add(n);
+    }
+  };
+  const scan = (s) => {
+    s = String(s || '').slice(0, 20000);
+    for (const m of s.matchAll(ABS_PATH)) {
+      if (bases.size >= 8) break;
+      const p = absolute(m[0].replace(/[\\/]+$/, ''));
+      if (p.length > 3 && path.isAbsolute(p)) bases.add(extOf(p) ? path.dirname(p) : p);
+    }
+    for (const m of s.matchAll(QUOTED_DOC)) add(m[2]);
+    for (const m of s.replace(QUOTED_DOC, ' ').matchAll(BARE_DOC)) add(m[1]);
+  };
+  if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(name)) {
+    add(input.file_path || input.notebook_path);
+    if (name === 'Write' && SCRIPT_EXT.test(String(input.file_path || ''))) {
+      bases.add(path.dirname(path.resolve(cwd || '.', absolute(String(input.file_path)))));
+      scan(input.content);
+    }
+  } else if (name === 'Bash' || name === 'PowerShell') scan(input.command);
+  return [...out];
+}
+
+// Lo pegado llega envuelto en <pasted_content id="…">…</pasted_content id="…"> (marcas de Claude Code para el modelo): en el chat, solo el texto
+export const unwrapPasted = (s) => String(s || '').replace(/<pasted_content(?: id="[^"]*")?>\n?/g, '').replace(/\n?<\/pasted_content(?: id="[^"]*")?>/g, '').trim();
 
 /**
  * @param {object} o
@@ -112,6 +162,8 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       at: new Map(), lastUuid: null, // uuid de cada registro -> mensajes que había tras él (para seguir la rama tras /rewind)
       sent: null, sentLen: 0, dirty: Infinity, // lo último enviado a la interfaz, para mandar solo lo nuevo
       pending: new Map(), // promptId -> { res, toolName, key, suggestions, input }
+      touch: new Map(), // id de la herramienta -> documentos que puede crear o cambiar (ver trackFiles)
+      maybe: new Map(), // documento -> { since, mtime }: tras cada herramienta se mira si ha cambiado
     };
     tabs.set(conv.id, t);
     return t;
@@ -168,6 +220,9 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       t.tools.clear();
       t.toolAt.clear();
       t.keys.clear();
+      t.conv.files = [];
+      t.touch.clear();
+      t.maybe.clear();
     }
     t.at.clear();
     t.lastUuid = null;
@@ -282,9 +337,12 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     if (t.branchAt?.at === t.conv.messages.length) extra = { ...extra, prev: t.branchAt.prev };
     t.branchAt = null;
     t.conv.messages.push({ role: 'user', id: crypto.randomUUID(), text, images, ...extra });
-    // Lo que estaba en la cola ya lo ha recogido Claude
-    const i = t.conv.queue.findIndex((q) => q.text.trim() === text.trim());
-    if (i >= 0) t.conv.queue.splice(i, 1);
+    // Lo que estaba en la cola ya lo ha recogido Claude (si Claude Code lo ha retocado, p. ej. una imagen
+    // como [Image #1], es el primero de los que ya tenía en su cola)
+    const q = t.conv.queue;
+    let i = q.findIndex((m) => m.text.trim() === text.trim());
+    if (i < 0) i = q.findIndex((m) => m.sent);
+    if (i >= 0) { q.splice(i, 1); setTimeout(() => pump(t), 0); }
     ensureReply(t);
   }
 
@@ -316,7 +374,7 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     if (text.startsWith('<task-notification>')) { taskDone(t, text); return; }
     if (text.startsWith('<system-reminder>')) return;
     if (text.startsWith('[Request interrupted by user')) { interrupted(t); return; }
-    addUser(t, text);
+    addUser(t, unwrapPasted(text));
   }
 
   // Aviso de que ha acabado algo en segundo plano (Claude Code: «Background command … completed»)
@@ -327,9 +385,10 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     const task = t.conv.background?.find((x) => x.id === id);
     if (task) t.conv.background = t.conv.background.filter((x) => x !== task);
     const label = task?.label || /"(.+)"/.exec(summary)?.[1] || id;
-    const code = /exit code (\d+)/.exec(summary)?.[1];
+    // Detenido desde /tasks: Claude Code lo da por fallido (el código de salida es el de matarlo)
+    const code = task?.stopping ? null : /exit code (\d+)/.exec(summary)?.[1];
     const what = task?.agent || /agent/i.test(summary) ? 'Agente en segundo plano' : 'Comando en segundo plano';
-    const verb = { completed: 'terminado', failed: 'ha fallado', killed: 'detenido', stopped: 'detenido' }[status] || status || 'terminado';
+    const verb = task?.stopping ? 'detenido' : { completed: 'terminado', failed: 'ha fallado', killed: 'detenido', stopped: 'detenido' }[status] || status || 'terminado';
     note(t, `${what} «${label}» ${verb}${code && code !== '0' ? ` (código ${code})` : ''}`, status === 'completed' && (!code || code === '0') ? 'check' : 'x');
   }
 
@@ -349,7 +408,7 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
         return true;
       case 'attachment': {
         const a = rec.attachment;
-        if (a?.type === 'queued_command' && a.origin?.kind === 'human' && typeof a.prompt === 'string') { addUser(t, a.prompt); return true; }
+        if (a?.type === 'queued_command' && a.origin?.kind === 'human' && typeof a.prompt === 'string') { addUser(t, unwrapPasted(a.prompt)); return true; }
         return false;
       }
       case 'system':
@@ -414,6 +473,8 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
             t.tools.set(b.id, tool);
             t.toolAt.set(b.id, conv.messages.length - 1);
             t.keys.set(b.id, b.name + JSON.stringify(b.input));
+            const docs = touchedFiles(b.name, b.input, conv.cwd);
+            if (docs.length) t.touch.set(b.id, { docs, since: Date.parse(rec.timestamp || 0) || Date.now() });
             r.blocks.push(tool);
           }
         }
@@ -443,12 +504,43 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     // arrancar este Claude Code ya no corren (al salir los cierra)
     const bg = !tool.isError && /running in background with ID: (\S+?)\.?(\s|$)|agentId: (\w+)/.exec(tool.result);
     if (bg && Date.parse(timestamp || 0) >= t.startedAt - 5000) {
+      const id = bg[1] || bg[3];
       const label = tool.input?.description || tool.input?.command || tool.name;
-      t.conv.background = [...(t.conv.background || []).filter((x) => x.id !== (bg[1] || bg[3])), { id: bg[1] || bg[3], label: cap(label, 200), agent: !bg[1] }];
+      // Lo que se ve en /tasks: la salida del comando o la transcripción del agente
+      const output = bg[1] ? /Output is being written to: (.+?\.output)/.exec(tool.result)?.[1]
+        : t.file && path.join(path.dirname(t.file), path.basename(t.file, '.jsonl'), 'subagents', `agent-${id}.jsonl`);
+      t.conv.background = [...(t.conv.background || []).filter((x) => x.id !== id), {
+        id, label: cap(label, 200), agent: !bg[1], tool: tool.name,
+        command: bg[1] ? cap(String(tool.input?.command || ''), 2000) : cap(String(tool.input?.prompt || ''), 2000),
+        output: output || null, startedAt: Date.parse(timestamp || 0) || Date.now(),
+      }];
     }
+    trackFiles(t, b.tool_use_id, Date.parse(timestamp || 0) >= t.startedAt - 5000);
     // Si el permiso se contestó en la terminal, la tarjeta sobra
     const key = t.keys.get(b.tool_use_id);
     for (const [pid, p] of t.pending) if (p.key === key) settle(t, pid, {});
+  }
+
+  // Documentos que Claude crea o cambia (Word, Excel, PDF, HTML…), para enseñarlos en el panel lateral sin
+  // pulsar nada: los que nombra cada herramienta se apuntan y, tras cada resultado, entran en conv.files
+  // los que han cambiado desde entonces (un script que escribe un Excel lo cambia en una herramienta
+  // posterior). Al leer la historia solo se miran los de esa herramienta
+  function trackFiles(t, toolId, live) {
+    const touch = t.touch.get(toolId);
+    t.touch.delete(toolId);
+    if (touch) for (const f of touch.docs) {
+      t.maybe.delete(f);
+      t.maybe.set(f, { since: touch.since, mtime: 0 });
+      if (t.maybe.size > 60) t.maybe.delete(t.maybe.keys().next().value);
+    }
+    for (const f of live ? [...t.maybe.keys()] : touch?.docs || []) {
+      const m = t.maybe.get(f);
+      let mtime;
+      try { mtime = fs.statSync(f).mtimeMs; } catch { continue; }
+      if (mtime < m.since - 2000 || mtime === m.mtime) continue;
+      m.mtime = mtime;
+      t.conv.files = [{ path: f, at: mtime, live }, ...(t.conv.files || []).filter((x) => x.path !== f)].slice(0, 30); // live: se acaba de cambiar (se abre solo)
+    }
   }
 
   // ---------- Hooks ----------
@@ -507,6 +599,7 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     t.conv.prompts = t.conv.prompts.filter((x) => x.id !== promptId);
     if (p.res && out) reply(p.res, out);
     flush(t, true);
+    if (t.conv.queue.length) t.drainTimer = setTimeout(() => pump(t), 500); // sin el diálogo, ya se puede teclear
   }
   function settleAll(t) { for (const id of [...t.pending.keys()]) settle(t, id, {}); }
 
@@ -621,28 +714,50 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       read(t);
       emit('chat:done', { convId: id, title: t.conv.title });
       flush(t, true);
-      drain(t);
+      pump(t);
     }, 1500);
   }
 
-  // La cola la guarda la app (no Claude Code) para poder quitar mensajes y devolverlos al cuadro
-  // de texto con Esc: se envía uno a uno cuando la pestaña queda libre. Uno que no ponga a
-  // trabajar a Claude (p. ej. /cost) no lo vuelve a liberar, así que se mira otra vez al rato
+  // Lista para teclear: lo que esperaba en la cola sale (ver pump)
   function markReady(t, drainNow = true) {
     if (t.ready) return;
     t.ready = true;
     clearTimeout(t.readyTimer);
-    if (drainNow) t.drainTimer = setTimeout(() => drain(t), 300);
+    if (drainNow) t.drainTimer = setTimeout(() => pump(t), 300);
   }
 
-  function drain(t) {
+  // La cola, como en Claude Code: lo que se escribe mientras trabaja se teclea ya en su campo y Enter lo
+  // deja en SU cola, que pasa al modelo en el siguiente hueco entre herramientas (queued_command) sin
+  // cortar el turno, o como mensaje nuevo si acaba antes. Aquí sigue en la cola (sent) hasta que sale en
+  // la transcripción (addUser). Esperan en la nuestra: lo escrito con un diálogo en pantalla (permiso,
+  // pregunta, plan: se teclearía en él) o mientras arranca, y los comandos (/x, !), hasta que acabe
+  const typedLater = (m) => /^[/!]/.test(m.text);
+  const GAP = 900; // entre dos mensajes tecleados (más seguidos, Claude Code pierde el Enter del segundo)
+  function pump(t) {
     clearTimeout(t.drainTimer);
     t.drainTimer = null;
-    if (t.conv.busy || !t.ready || !t.conv.queue.length || !tabs.has(t.conv.id)) return;
-    const m = t.conv.queue.shift();
-    deliver(t, m.text);
+    const q = t.conv.queue;
+    if (!t.ready || !tabs.has(t.conv.id) || t.pending.size || t.clearing || !q.length) return;
+    if (!t.conv.busy && q.some((m) => m.sent)) {
+      // Acabado el turno, Claude Code manda él solo lo de su cola; si no sale en la transcripción, se da por enviado
+      t.drainTimer = setTimeout(() => {
+        if (t.conv.busy || !tabs.has(t.conv.id)) return;
+        t.conv.queue = t.conv.queue.filter((m) => !m.sent);
+        flush(t, true);
+        pump(t);
+      }, 8000);
+      return;
+    }
+    const next = q.find((m) => !m.sent);
+    if (!next || (t.conv.busy && typedLater(next))) return;
+    const wait = GAP - (Date.now() - (t.typedAt || 0));
+    if (wait > 0) { t.drainTimer = setTimeout(() => pump(t), wait); return; }
+    if (t.conv.busy) next.sent = true;
+    else q.splice(q.indexOf(next), 1);
+    t.typedAt = Date.now();
+    deliver(t, next.text);
     flush(t, true);
-    if (t.conv.queue.length) t.drainTimer = setTimeout(() => drain(t), 3000);
+    if (q.some((m) => !m.sent)) t.drainTimer = setTimeout(() => pump(t), t.conv.busy ? GAP : 3000);
   }
 
   // Teclea un mensaje en la terminal y lo envía con Enter
@@ -653,6 +768,7 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       t.clearAt = Date.now();
       t.conv.messages = [];
       t.conv.tasks = [];
+      t.conv.files = [];
       t.conv.context = null;
       t.reply = null;
       flush(t, true);
@@ -678,34 +794,83 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     }).filter(Boolean);
     const full = [text, ...files].filter(Boolean).join(' ');
     if (!full) return;
-    // Mientras trabaja (o mientras arranca), a la cola: se envía al terminar el turno
-    if (t.conv.busy || !t.ready) {
+    // Mientras trabaja (o mientras arranca, o justo tras otro: se pegaría en el mismo), a la cola (ver pump)
+    if (t.conv.busy || !t.ready || t.pending.size || t.conv.queue.length || Date.now() - (t.typedAt || 0) < GAP) {
       t.conv.queue.push({ id: crypto.randomUUID(), text: full });
       flush(t, true);
+      pump(t);
       return;
     }
+    t.typedAt = Date.now();
     deliver(t, full);
   }
 
-  // Retira un mensaje de la cola: su texto vuelve al cuadro de texto
+  // Retira un mensaje de la cola: su texto vuelve al cuadro de texto. Si ya estaba en la de Claude Code,
+  // ↑ sube toda su cola a su campo («Press up to edit queued messages»): se vacía (Ctrl+U borra la línea
+  // y Retroceso la une a la anterior) y lo demás se vuelve a teclear
   function unqueue(id, uuid) {
     const t = tabs.get(id);
     const m = t?.conv.queue.find((x) => x.id === uuid);
     if (!m) return null;
+    const typed = t.conv.queue.filter((x) => x.sent);
     t.conv.queue = t.conv.queue.filter((x) => x !== m);
+    if (m.sent) {
+      clearTimeout(t.drainTimer);
+      clearTimeout(t.clearing);
+      const lines = typed.reduce((n, x) => n + x.text.split('\n').length, 2);
+      write(id, '\x1b[A');
+      t.clearing = setTimeout(() => { // mientras, la cola no teclea (ver pump)
+        t.clearing = null;
+        if (!tabs.has(id)) return;
+        write(id, '\x15\x7f'.repeat(Math.min(lines, 3000)));
+        for (const x of t.conv.queue) x.sent = false;
+        t.typedAt = Date.now();
+        flush(t, true);
+        pump(t);
+      }, 400);
+    }
     flush(t, true);
     return m.text;
   }
 
-  // Enviar ya (Ctrl+Enter, como chat:sendNow de Claude Code): corta el turno y manda la cola
-  // entera como un solo mensaje en cuanto la pestaña queda libre
+  // Tarea en segundo plano detenida desde /tasks: su <task-notification> la quita y lo dice en el
+  // chat; si no llega, se quita igualmente
+  function backgroundStopped(id, taskId) {
+    const t = tabs.get(id);
+    const task = t?.conv.background?.find((x) => x.id === taskId);
+    if (!task) return;
+    task.stopping = true;
+    flush(t, true);
+    setTimeout(() => {
+      if (!t.conv.background?.includes(task)) return;
+      t.conv.background = t.conv.background.filter((x) => x !== task);
+      note(t, `Comando en segundo plano «${task.label}» detenido`, 'x');
+      if (!t.conv.busy) closeReply(t);
+      flush(t, true);
+    }, 8000);
+  }
+
+  // Enviar ya (Ctrl+Enter): el ctrl+x ctrl+s de Claude Code, que corta el turno y manda ya su cola. Lo
+  // que aún no estaba en ella se teclea antes, junto; con un diálogo en pantalla, Esc (sale al acabar)
   function sendNow(id) {
     const t = tabs.get(id);
     if (!t?.conv.queue.length) return false;
     clearTimeout(t.drainTimer);
-    if (t.conv.queue.length > 1) t.conv.queue = [{ id: crypto.randomUUID(), text: t.conv.queue.map((m) => m.text).join('\n\n') }];
-    if (t.conv.busy) write(id, '\x1b');
-    else drain(t);
+    const loose = t.conv.queue.filter((m) => !m.sent && !typedLater(m));
+    if (loose.length > 1) {
+      loose[0].text = loose.map((m) => m.text).join('\n\n');
+      t.conv.queue = t.conv.queue.filter((m) => !loose.includes(m) || m === loose[0]);
+    }
+    if (!t.conv.busy) pump(t);
+    else if (t.pending.size) write(id, '\x1b');
+    else {
+      const go = () => {
+        const m = t.conv.queue.find((x) => !x.sent && !typedLater(x));
+        if (m) { m.sent = true; t.typedAt = Date.now(); deliver(t, m.text); flush(t, true); }
+        setTimeout(() => { write(id, '\x18'); setTimeout(() => write(id, '\x13'), 100); }, m ? 500 : 0);
+      };
+      setTimeout(go, Math.max(0, GAP - (Date.now() - (t.typedAt || 0))));
+    }
     flush(t, true);
     return true;
   }
@@ -714,9 +879,11 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     const t = tabs.get(id);
     if (!t) return '';
     write(id, '\x1b');
-    // Lo que estaba en cola vuelve al cuadro de texto, como en la terminal
+    // Lo que ya estaba en la cola de Claude Code lo manda él al cortar, como en la terminal; lo demás
+    // vuelve al cuadro de texto
     clearTimeout(t.drainTimer);
-    const returned = t.conv.queue.splice(0).map((m) => m.text).filter(Boolean).join('\n\n');
+    const returned = t.conv.queue.filter((m) => !m.sent).map((m) => m.text).filter(Boolean).join('\n\n');
+    t.conv.queue = t.conv.queue.filter((m) => m.sent);
     flush(t, true);
     return returned;
   }
@@ -730,6 +897,7 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     clearTimeout(t.flushTimer);
     clearTimeout(t.idleTimer);
     clearTimeout(t.drainTimer);
+    clearTimeout(t.clearing);
     clearTimeout(t.readyTimer);
     settleAll(t);
     for (const f of t.tmp) fs.rm(f, { force: true }, () => {});
@@ -751,5 +919,5 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     server.close();
   }
 
-  return { hookSettings, attach, start, stop, fail, hold, setBusy, send, sendNow, interrupt, rewind, unqueue, respond, detach, close, has: (id) => tabs.has(id) };
+  return { hookSettings, attach, start, stop, fail, hold, setBusy, send, sendNow, interrupt, rewind, unqueue, backgroundStopped, respond, detach, close, has: (id) => tabs.has(id) };
 }

@@ -12,9 +12,11 @@ import { createAssist } from './assist.mjs';
 import { createWhatsApp } from './whatsapp.mjs';
 import { createAccounts } from './accounts.mjs';
 import { createTerminals, terminalClaude, sessionExists } from './terminals.mjs';
-import { createTermChat } from './termchat.mjs';
+import { createTermChat, unwrapPasted } from './termchat.mjs';
 import { createHttpMcp } from './mcp-http.mjs';
 import { createUnixJobs } from './unix-jobs.mjs';
+import { readOutput, stopTask } from './bgtasks.mjs';
+import { createDocView } from './docview.mjs';
 import { createSchedules, cleanSchedule, nextRun } from './schedules.mjs';
 import { z } from 'zod';
 
@@ -90,6 +92,7 @@ const DEFAULTS = {
   notify: { done: true, ask: true, scheduled: true, sound: true }, // avisos del sistema por tipo (terminado, preguntas y permisos, tareas programadas) y con sonido
   schedules: [],           // tareas programadas (ver schedules.mjs)
   blankBare: true,         // pestañas en blanco (sin preset, para dudas generales): sin conectores MCP ni plugins
+  autoPreview: true,       // los documentos que Claude crea o cambia (Word, Excel, PDF, HTML…) se abren solos en el panel lateral
   ext: {},                 // conectores, skills y plugins apagados en todas las pestañas: { mcp|skills|plugins: { nombre: false } } (ver extOff)
 };
 
@@ -1382,7 +1385,7 @@ async function historyItem(file, st) {
     else if (o.type === 'custom-title' && o.customTitle) customTitle = o.customTitle;
     else if (o.type === 'summary' && o.summary) summary = o.summary;
     else if (!prompt && o.type === 'user' && !o.isSidechain && !o.isMeta) {
-      const t = promptText(o.message?.content).trim();
+      const t = unwrapPasted(promptText(o.message?.content));
       // Sin los avisos internos (<command-name>, <local-command-caveat>…)
       if (t && !t.startsWith('<')) prompt = t.replace(/\s+/g, ' ').slice(0, 300);
     }
@@ -1738,6 +1741,21 @@ ipcMain.handle('preview:html', (e, html) => {
   pw.webContents.on('page-title-updated', (ev, title) => { ev.preventDefault(); pw.setTitle(title && !title.startsWith('data:') ? `Vista previa · ${title}` : 'Vista previa'); });
   pw.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(String(html).slice(0, 1500000))}`);
 });
+// Documentos en el panel lateral (Word, Excel, PDF, HTML, imágenes…): los sirve docview.mjs en
+// 127.0.0.1 y cada ventana vigila el que enseña para recargarlo al cambiar
+const docView = createDocView({ log: logError('vista previa') });
+const docWatch = new Map(); // webContents.id -> dejar de vigilar
+app.on('will-quit', () => docView.close());
+ipcMain.handle('preview:file', (_e, file, cwd) => (file && fs.existsSync(file) ? docView.urlFor(file, cwd) : null));
+ipcMain.handle('preview:watch', (e, file) => {
+  const wc = e.sender;
+  docWatch.get(wc.id)?.();
+  docWatch.delete(wc.id);
+  if (!file) return;
+  if (!wc.docWatched) { wc.docWatched = true; wc.once('destroyed', () => { docWatch.get(wc.id)?.(); docWatch.delete(wc.id); }); }
+  docWatch.set(wc.id, docView.watch(file, () => { if (!wc.isDestroyed()) wc.send('preview:changed', file); }));
+});
+ipcMain.handle('show-in-folder', (_e, p) => shell.showItemInFolder(p));
 // El panel de artefactos pinta el HTML en un <webview>: siempre aislado como la ventana de arriba
 // (sin preload ni Node, sandbox, sesión en memoria propia; solo URL data: o un servidor de este equipo,
 // como una vista previa en vivo); los demás enlaces, al navegador
@@ -1745,7 +1763,7 @@ const LOCAL_URL = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i;
 app.on('web-contents-created', (_e, wc) => {
   wc.on('will-attach-webview', (ev, prefs, params) => {
     delete prefs.preload;
-    Object.assign(prefs, { sandbox: true, contextIsolation: true, nodeIntegration: false, nodeIntegrationInSubFrames: false, webviewTag: false, spellcheck: false });
+    Object.assign(prefs, { sandbox: true, contextIsolation: true, nodeIntegration: false, nodeIntegrationInSubFrames: false, webviewTag: false, spellcheck: false, plugins: true });
     params.partition = 'vista-previa';
     const src = String(params.src || '');
     if (!src.startsWith('data:text/html') && !LOCAL_URL.test(src)) ev.preventDefault();
@@ -1843,6 +1861,16 @@ ipcMain.handle('chat:interrupt', (_e, id) => termchat.interrupt(id));
 ipcMain.handle('chat:sendNow', (_e, id) => termchat.sendNow(id));
 ipcMain.handle('chat:rewind', (_e, id, msgId) => termchat.rewind(id, msgId));
 ipcMain.handle('chat:unqueue', (_e, id, uuid) => termchat.unqueue(id, uuid));
+// /tasks: salida de lo que sigue en segundo plano y detenerlo (bgtasks.mjs)
+const bgTask = (id, taskId) => terminals.get(id)?.background?.find((x) => x.id === taskId);
+ipcMain.handle('bg:output', (_e, id, taskId) => readOutput(bgTask(id, taskId)));
+ipcMain.handle('bg:stop', async (_e, id, taskId) => {
+  const task = bgTask(id, taskId);
+  if (!task || task.agent) return false;
+  const ok = await stopTask(terminals.pid(id), task).catch((e) => { logError('detener tarea')(e); return false; });
+  if (ok) termchat.backgroundStopped(id, taskId);
+  return ok;
+});
 ipcMain.handle('prompt:respond', (_e, id, promptId, payload) => termchat.respond(id, promptId, payload));
 
 ipcMain.handle('meta:get', () => meta);

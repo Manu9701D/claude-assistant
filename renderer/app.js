@@ -274,6 +274,9 @@ artEl.querySelector('[data-art="copy"]').innerHTML = I.copy;
 artEl.querySelector('[data-art="save"]').innerHTML = I.download;
 artEl.querySelector('[data-art="window"]').innerHTML = I.external;
 artEl.querySelector('[data-art="close"]').innerHTML = I.x;
+artEl.querySelector('[data-art="folder"]').innerHTML = I.folder;
+artEl.querySelector('[data-art="wide"]').innerHTML = '<svg viewBox="0 0 20 20"><path d="M12 3.5h4.5V8M8 16.5H3.5V12M16.5 3.5 11.5 8.5M3.5 16.5l5-5"/></svg>';
+artEl.querySelector('.artifact-title').addEventListener('click', () => { if (artifact) toggleFileList(); });
 try { const w = Number(localStorage.getItem('artifactW')); if (w) artEl.style.width = `${w}px`; } catch {}
 function openArtifactFrom(box) {
   const kind = box.dataset.kind;
@@ -295,25 +298,126 @@ api.onArtUrl(({ convId, url }) => {
   if (state.activeId === convId) openArtifactUrl(url, convId);
   else if (state.convs.has(convId)) artPending.set(convId, url);
 });
+// Documentos que Claude crea o cambia (conv.files, ver trackFiles en termchat.mjs): se abren solos en el
+// panel y se recargan al cambiar (docview.mjs los sirve y los vigila). Markdown no se abre solo: en un
+// proyecto de código serían muchos
+const AUTO_DOC = /\.(docx|xlsx|xlsm|xls|ods|csv|tsv|pptx|pdf|html?|svg|png|jpe?g|gif|webp)$/i;
+const filesSeen = new Map(); // convId -> fecha del último documento ya visto
+const filePending = new Map(); // convId -> ruta que abrir al volver a esa pestaña
+const fileDismissed = new Map(); // convId -> rutas cuyo panel se ha cerrado a mano (no se reabren solas)
+let watching = null;
+function watchFile(file) {
+  if (watching === file) return;
+  watching = file;
+  api.previewWatch(file);
+}
+function openFileArtifact(file, convId = state.activeId) {
+  fileDismissed.get(convId)?.delete(file);
+  if (artifact?.kind === 'file' && artifact.path === file && artifact.convId === convId) { reloadFileArtifact(); return; }
+  artifact = { convId, kind: 'file', path: file, text: file, title: baseName(file), tab: 'view' };
+  artEl.hidden = false;
+  renderArtifact();
+}
+function autoPreview(c) {
+  const top = c.files?.[0];
+  if (!top?.live || filesSeen.get(c.id) === top.at) return;
+  filesSeen.set(c.id, top.at);
+  if (state.config?.autoPreview === false || !AUTO_DOC.test(top.path) || fileDismissed.get(c.id)?.has(top.path)) return;
+  if (artifact?.kind === 'file' && artifact.path === top.path && artifact.convId === c.id) return; // ya se ve: lo recarga su vigilancia
+  if (c.id === state.activeId) openFileArtifact(top.path, c.id);
+  else filePending.set(c.id, top.path);
+}
+// Recargar sin perder por dónde se iba (en las hojas de cálculo, el desplazamiento es de la cuadrícula)
+const SCROLLER = "(document.querySelector('.grid') || document.scrollingElement)";
+async function reloadFileArtifact() {
+  const wv = artifact?.wv;
+  if (!wv?.isConnected) return;
+  let pos = null;
+  try { pos = await wv.executeJavaScript(`(() => { const g = ${SCROLLER}; return g ? [g.scrollLeft, g.scrollTop] : null; })()`); } catch {}
+  if (Array.isArray(pos)) {
+    const [x, y] = pos.map((n) => Number(n) || 0);
+    wv.addEventListener('did-finish-load', () => {
+      wv.executeJavaScript(`(() => { const g = ${SCROLLER}; if (g) { g.scrollLeft = ${x}; g.scrollTop = ${y}; } })()`).catch(() => {});
+    }, { once: true });
+  }
+  wv.reloadIgnoringCache();
+}
+api.onPreviewChanged((file) => { if (artifact?.kind === 'file' && artifact.path === file) reloadFileArtifact(); });
+// Lista de los documentos de la conversación (al pulsar el título del panel)
+const artFiles = artEl.querySelector('.artifact-files');
+// De la pestaña actual (el panel sigue abierto al cambiar de pestaña) o, si no tiene, de la del panel
+const filesConv = () => (current()?.files?.length ? current() : state.convs.get(artifact?.convId));
+function toggleFileList(show = artFiles.hidden) {
+  const c = filesConv();
+  const files = c?.files || [];
+  if (!show || !files.length) { artFiles.hidden = true; return; }
+  artFiles.innerHTML = files.map((f) => `<button type="button" class="art-file${artifact.path === f.path ? ' on' : ''}" data-path="${esc(f.path)}" title="${esc(f.path)}">`
+    + `<span class="art-file-name">${esc(baseName(f.path))}</span><span class="art-file-dir">${esc(shortPath(f.path.slice(0, -baseName(f.path).length - 1)))}</span>`
+    + `<span class="art-file-at">${esc(agoText(f.at))}</span></button>`).join('');
+  artFiles.hidden = false;
+}
+artFiles.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-path]');
+  if (!b) return;
+  artFiles.hidden = true;
+  openFileArtifact(b.dataset.path, filesConv()?.id);
+});
+document.addEventListener('pointerdown', (e) => { if (!artFiles.hidden && !e.target.closest('.artifact-files, .artifact-title')) artFiles.hidden = true; });
 function closeArtifact() {
+  if (artifact?.kind === 'file') {
+    if (!fileDismissed.has(artifact.convId)) fileDismissed.set(artifact.convId, new Set());
+    fileDismissed.get(artifact.convId).add(artifact.path);
+  }
   artifact = null;
   artEl.hidden = true;
+  artEl.classList.remove('wide');
+  artFiles.hidden = true;
   artEl.querySelector('.artifact-body').innerHTML = ''; // fuera el <webview> y su proceso
+  watchFile(null);
+  renderDocsButton();
+}
+// Botón del compositor para volver a abrir los documentos con el panel cerrado
+function renderDocsButton() {
+  const btn = $('#art-docs');
+  const n = current()?.files?.length || 0;
+  btn.hidden = !n || !artEl.hidden;
+  btn.title = n === 1 ? `Ver ${baseName(current().files[0].path)}` : `Ver los documentos de esta conversación (${n})`;
 }
 function renderArtifact() {
   if (!artifact) return;
   const { kind, text, tab } = artifact;
-  artEl.querySelector('.artifact-title').textContent = artifact.title;
+  const file = kind === 'file';
+  const title = artEl.querySelector('.artifact-title');
+  title.textContent = artifact.title;
+  title.title = file ? `${artifact.path}\nPulsa para ver los demás documentos de la conversación` : '';
+  title.classList.toggle('pick', !!filesConv()?.files?.length);
   artEl.querySelectorAll('.artifact-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.art === tab));
-  artEl.querySelector('[data-art="window"]').hidden = kind !== 'html' && kind !== 'url';
-  artEl.querySelector('[data-art="window"]').title = kind === 'url' ? 'Abrir en el navegador' : 'Abrir en una ventana';
-  artEl.querySelector('.artifact-tabs').hidden = kind === 'url';
-  artEl.querySelector('[data-art="save"]').hidden = kind === 'url';
-  artEl.querySelector('[data-art="copy"]').title = kind === 'url' ? 'Copiar la dirección' : 'Copiar';
+  artEl.querySelector('[data-art="window"]').hidden = kind !== 'html' && kind !== 'url' && !file;
+  artEl.querySelector('[data-art="window"]').title = kind === 'url' ? 'Abrir en el navegador' : file ? 'Abrir con su aplicación' : 'Abrir en una ventana';
+  artEl.querySelector('.artifact-tabs').hidden = kind === 'url' || file;
+  artEl.querySelector('[data-art="save"]').hidden = kind === 'url' || file;
+  artEl.querySelector('[data-art="folder"]').hidden = !file;
+  artEl.querySelector('[data-art="copy"]').title = kind === 'url' ? 'Copiar la dirección' : file ? 'Copiar la ruta' : 'Copiar';
+  artEl.querySelector('[data-art="wide"]').title = artEl.classList.contains('wide') ? 'Volver al chat' : 'Ampliar sobre el chat';
+  renderDocsButton();
   const body = artEl.querySelector('.artifact-body');
-  body.className = `artifact-body ${tab === 'code' ? 'is-code' : `is-${kind === 'url' ? 'html' : kind}`}`;
+  body.className = `artifact-body ${tab === 'code' ? 'is-code' : `is-${kind === 'url' || file ? 'html' : kind}`}`;
+  watchFile(file ? artifact.path : null);
   if (tab === 'code') { body.innerHTML = `<pre><code class="hljs">${highlight(text, ART[kind][2])}</code></pre>`; return; }
-  if (kind === 'url') {
+  if (file) {
+    // Documento local: lo sirve docview.mjs (convertido si es Word, Excel o PowerPoint)
+    const own = artifact;
+    body.innerHTML = '<div class="preview-view loading">Abriendo…</div>';
+    api.previewFile(own.path, state.convs.get(own.convId)?.cwd).then((url) => {
+      if (artifact !== own) return;
+      if (!url) { body.innerHTML = `<div class="preview-error">No encuentro ${esc(own.path)}: ¿se ha movido o borrado?</div>`; return; }
+      const wv = document.createElement('webview');
+      wv.setAttribute('partition', 'vista-previa');
+      wv.setAttribute('src', url);
+      own.wv = wv;
+      body.replaceChildren(wv);
+    }).catch(() => { if (artifact === own) body.innerHTML = `<div class="preview-error">No se ha podido abrir ${esc(own.path)}</div>`; });
+  } else if (kind === 'url') {
     // Página viva de un servidor local: se actualiza ella sola; el título, el suyo
     const wv = document.createElement('webview');
     wv.setAttribute('partition', 'vista-previa');
@@ -345,7 +449,9 @@ artEl.querySelector('.artifact-head').addEventListener('click', async (e) => {
   const a = btn.dataset.art;
   if (a === 'view' || a === 'code') { if (artifact.tab !== a) { artifact.tab = a; renderArtifact(); } }
   else if (a === 'close') closeArtifact();
-  else if (a === 'window') { if (artifact.kind === 'url') window.open(artifact.text); else api.previewHtml(artifact.text); } // window.open → navegador
+  else if (a === 'window') { if (artifact.kind === 'file') api.openPath(artifact.path); else if (artifact.kind === 'url') window.open(artifact.text); else api.previewHtml(artifact.text); } // window.open → navegador
+  else if (a === 'folder') api.showInFolder(artifact.path);
+  else if (a === 'wide') { artEl.classList.toggle('wide'); btn.title = artEl.classList.contains('wide') ? 'Volver al chat' : 'Ampliar sobre el chat'; }
   else if (a === 'copy') { navigator.clipboard.writeText(artifact.text); flashCopied(btn); }
   else if (a === 'save') {
     const name = `${artifact.title.replace(/[\\/:*?"<>|]+/g, '').trim().slice(0, 60) || 'artefacto'}.${ART[artifact.kind][1]}`;
@@ -353,6 +459,7 @@ artEl.querySelector('.artifact-head').addEventListener('click', async (e) => {
     if (p) toast(`Guardado en ${shortPath(p)}`);
   }
 });
+$('#art-docs').addEventListener('click', () => { const f = current()?.files?.[0]; if (f) { openFileArtifact(f.path, current().id); if ((current().files.length || 0) > 1) toggleFileList(true); } });
 // Ancho: arrastrando el borde izquierdo (el <webview> se tragaría el ratón: se desactiva mientras)
 artEl.querySelector('.artifact-resize').addEventListener('pointerdown', (e) => {
   e.preventDefault();
@@ -784,6 +891,7 @@ function showView() {
   renderQueue();
   renderTasks();
   renderChips();
+  renderDocsButton();
   updateComposer();
   scrollToBottom();
   updateToBottom();
@@ -1074,9 +1182,11 @@ function renderThread() {
     + (msgs !== c.messages ? '<div class="branch-note">Versión anterior, solo para leer: Claude sigue con la última, y lo que escribas continúa desde ella.</div>' : '');
   thread.dataset.count = n;
   if (thread.querySelector('.preview-view.loading')) queueDiagrams(); // el HTML pudo salir de mdCache
-  if (artifact && artifact.convId !== c.id) closeArtifact(); // el panel es de la conversación en la que se abrió
+  // El panel sigue abierto al cambiar de pestaña (con lo que mostraba), salvo que esta tenga algo nuevo que enseñar
   if (artPending.has(c.id)) { openArtifactUrl(artPending.get(c.id), c.id); artPending.delete(c.id); }
+  else if (filePending.has(c.id)) { openFileArtifact(filePending.get(c.id), c.id); filePending.delete(c.id); }
   else if (artifact?.kind === 'mermaid' && !artifact.img) renderArtifact(); // quizá ya está dibujado
+  if (artifact) { artFiles.hidden = true; artEl.querySelector('.artifact-title').classList.toggle('pick', !!filesConv()?.files?.length); }
   updateWorking();
 }
 
@@ -1458,7 +1568,8 @@ function renderTasks() {
   const el = $('#tasks');
   // Lo que sigue en segundo plano (como «· 1 shell» al pie de Claude Code)
   const bg = c?.background || [];
-  const bgHtml = bg.length ? `<div class="bg-running" title="${esc(bg.map((x) => x.label).join('\n'))}"><span class="todo-spin"></span><span class="q-label-sm">En segundo plano</span><span class="q-text-sm">${esc(bg.map((x) => x.label).join(' · '))}</span>${bg.length > 1 ? `<span class="todo-count">${bg.length}</span>` : ''}</div>` : '';
+  const bgHtml = bg.length ? `<button type="button" class="bg-running" data-open-bg title="${esc(bg.map((x) => x.label).join('\n'))}&#10;&#10;Ver la salida o detener (/tasks)"><span class="todo-spin"></span><span class="q-label-sm">En segundo plano</span><span class="q-text-sm">${esc(bg.map((x) => x.label).join(' · '))}</span>${bg.length > 1 ? `<span class="todo-count">${bg.length}</span>` : ''}${I.chevron}</button>` : '';
+  if ($('#bg-dialog').open) renderBackground();
   if (!tasks.length || (!pending && !c.busy)) { el.innerHTML = bgHtml; return; }
   const done = tasks.filter((t) => t.status === 'completed').length;
   const collapsed = collapsedTasks.has(c.id);
@@ -1472,11 +1583,131 @@ function renderTasks() {
     }).join('')}</ul>`}</div>${bgHtml}`;
 }
 $('#tasks').addEventListener('click', (e) => {
+  if (e.target.closest('[data-open-bg]')) { openBackground(current()); return; }
   if (!e.target.closest('[data-toggle-tasks]')) return;
   const id = state.activeId;
   if (collapsedTasks.has(id)) collapsedTasks.delete(id); else collapsedTasks.add(id);
   renderTasks();
 });
+
+// ---------- /tasks: lo que sigue en segundo plano ----------
+// Como el diálogo de Claude Code: la lista (↑/↓, Enter para ver, K para detener) y, en cada una,
+// su salida en vivo (los comandos) o lo que va haciendo (los agentes)
+const bgDlg = { convId: null, sel: 0, view: null, timer: null, out: null };
+const elapsedText = (ms) => {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  return s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
+};
+function openBackground(c) {
+  if (!c) return;
+  Object.assign(bgDlg, { convId: c.id, sel: 0, view: null, out: null });
+  const dlg = $('#bg-dialog');
+  renderBackground();
+  if (!dlg.open) dlg.showModal();
+  $('#bg-body').focus();
+  clearInterval(bgDlg.timer);
+  bgDlg.timer = setInterval(() => { if (dlg.open) refreshBackground(); }, 1000);
+}
+function bgTasks() { return state.convs.get(bgDlg.convId)?.background || []; }
+function renderBackground() {
+  const tasks = bgTasks();
+  const task = bgDlg.view && tasks.find((x) => x.id === bgDlg.view);
+  if (bgDlg.view && !task) { bgDlg.view = null; bgDlg.out = null; } // ha terminado: de vuelta a la lista
+  $('#bg-back').hidden = !task;
+  $('#bg-heading').textContent = task ? task.label : 'Tareas en segundo plano';
+  const body = $('#bg-body');
+  const stopBtn = (x) => x.agent ? '' : `<button type="button" class="btn sm" data-bg-stop="${esc(x.id)}" ${x.stopping ? 'disabled' : ''}>${I.stop}${x.stopping ? 'Deteniendo…' : 'Detener'}</button>`;
+  if (task) {
+    const o = bgDlg.out;
+    const kind = task.agent ? 'Agente' : task.tool === 'PowerShell' ? 'PowerShell' : 'Shell';
+    const text = !o ? 'Cargando…' : o.missing ? 'Todavía no hay salida.' : o.text || (task.agent ? 'Todavía no ha hecho nada.' : 'Sin salida todavía.');
+    const pre = body.querySelector('.bgt-out');
+    const atEnd = !pre || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
+    if (body.dataset.task !== task.id) {
+      body.dataset.task = task.id;
+      body.innerHTML = `<div class="bgt-meta"><span class="bgt-kind">${kind}</span><span class="bgt-time"></span><span class="bgt-gap"></span>${task.output ? `<button type="button" class="btn sm ghost" data-bg-file>${I.file}Abrir archivo</button>` : ''}<span class="bgt-stop"></span></div>
+        ${task.command ? `<pre class="bgt-cmd">${esc(task.command)}</pre>` : ''}<pre class="bgt-out" tabindex="0"></pre>`;
+    }
+    body.querySelector('.bgt-time').textContent = `${task.stopping ? 'Deteniendo' : 'En marcha'} · ${elapsedText(task.startedAt)}`;
+    body.querySelector('.bgt-stop').innerHTML = stopBtn(task);
+    const out = body.querySelector('.bgt-out');
+    const shown = (o?.cut ? '…\n' : '') + text;
+    if (out.textContent !== shown) {
+      out.textContent = shown;
+      out.classList.toggle('empty', !o || o.missing || !o.text);
+      if (atEnd) out.scrollTop = out.scrollHeight; // sigue el final, como un tail -f, salvo si se ha subido
+    }
+    $('#bg-hint').innerHTML = `${task.agent ? '' : '<kbd>K</kbd> detener · '}<kbd>Esc</kbd> volver`;
+    return;
+  }
+  delete body.dataset.task;
+  bgDlg.sel = Math.min(bgDlg.sel, Math.max(0, tasks.length - 1));
+  body.innerHTML = tasks.length ? `<div class="bgt-list">${tasks.map((x, i) => `<div class="bgt-row${i === bgDlg.sel ? ' sel' : ''}" data-bg-view="${esc(x.id)}" data-i="${i}">
+      <span class="todo-spin"></span>${x.agent ? I.agent : I.terminal}
+      <span class="bgt-label"><span class="t">${esc(x.label)}</span><span class="d">${x.agent ? 'Agente' : x.tool === 'PowerShell' ? 'PowerShell' : 'Shell'} · ${x.stopping ? 'deteniendo' : elapsedText(x.startedAt)}</span></span>
+      ${stopBtn(x)}</div>`).join('')}</div>`
+    : '<p class="bgt-none">No queda nada en segundo plano.</p>';
+  $('#bg-hint').innerHTML = tasks.length ? '<kbd>↑</kbd><kbd>↓</kbd> elegir · <kbd>Enter</kbd> ver la salida · <kbd>K</kbd> detener · <kbd>Esc</kbd> cerrar' : '<kbd>Esc</kbd> cerrar';
+}
+async function refreshBackground() {
+  if (bgDlg.view) {
+    const id = bgDlg.view;
+    const o = await api.bgOutput(bgDlg.convId, id);
+    if (bgDlg.view !== id) return;
+    bgDlg.out = o;
+  }
+  renderBackground();
+}
+function viewBackground(id) {
+  bgDlg.view = id;
+  bgDlg.out = null;
+  renderBackground();
+  refreshBackground();
+}
+async function stopBackground(id) {
+  const task = bgTasks().find((x) => x.id === id);
+  if (!task || task.agent || task.stopping) return;
+  task.stopping = true;
+  renderBackground();
+  if (!await api.bgStop(bgDlg.convId, id)) {
+    task.stopping = false;
+    renderBackground();
+    toast('No he encontrado su proceso: puede que ya haya terminado');
+  }
+}
+$('#bg-body').addEventListener('click', (e) => {
+  const stop = e.target.closest('[data-bg-stop]');
+  if (stop) { stopBackground(stop.dataset.bgStop); return; }
+  if (e.target.closest('[data-bg-file]')) { const t = bgTasks().find((x) => x.id === bgDlg.view); if (t?.output) api.openPath(t.output); return; }
+  const row = e.target.closest('[data-bg-view]');
+  if (row) viewBackground(row.dataset.bgView);
+});
+$('#bg-body').addEventListener('mousemove', (e) => {
+  const row = e.target.closest('.bgt-row');
+  if (!row || +row.dataset.i === bgDlg.sel) return;
+  bgDlg.sel = +row.dataset.i;
+  renderBackground();
+});
+$('#bg-back').onclick = () => { bgDlg.view = null; bgDlg.out = null; renderBackground(); $('#bg-body').focus(); };
+$('#bg-dialog').addEventListener('keydown', (e) => {
+  const tasks = bgTasks();
+  if (e.key === 'Escape' && bgDlg.view) { e.preventDefault(); $('#bg-back').click(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (!bgDlg.view && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && tasks.length) {
+    e.preventDefault();
+    bgDlg.sel = (bgDlg.sel + (e.key === 'ArrowDown' ? 1 : -1) + tasks.length) % tasks.length;
+    renderBackground();
+    $('#bg-body .bgt-row.sel')?.scrollIntoView({ block: 'nearest' });
+  } else if (!bgDlg.view && e.key === 'Enter' && tasks[bgDlg.sel] && !e.target.closest('button')) {
+    e.preventDefault();
+    viewBackground(tasks[bgDlg.sel].id);
+  } else if (e.key.toLowerCase() === 'k' || e.key.toLowerCase() === 'x') {
+    const t = bgDlg.view ? tasks.find((x) => x.id === bgDlg.view) : tasks[bgDlg.sel];
+    if (t) { e.preventDefault(); stopBackground(t.id); }
+  }
+});
+$('#bg-dialog').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+$('#bg-dialog').addEventListener('close', () => { clearInterval(bgDlg.timer); bgDlg.timer = null; bgDlg.view = null; focusInput(); });
 
 // ---------- Cola de mensajes ----------
 function renderQueue() {
@@ -2016,6 +2247,10 @@ async function runLocalCommand(name, arg) {
       if (arg) return false; // con id, que la retome Claude Code en esta pestaña
       openHistory();
       return true;
+    case 'tasks':
+    case 'bashes':
+      openBackground(c);
+      return true;
     case 'export':
       exportConversation(c, arg);
       return true;
@@ -2207,7 +2442,7 @@ async function interrupt() {
   $('#stop').disabled = true;
   const returned = await api.interrupt(c.id);
   $('#stop').disabled = false;
-  // Lo que estaba en cola vuelve al cuadro de texto para que lo edites
+  // Lo que aún esperaba en la cola de la app (p. ej. un comando) vuelve al cuadro de texto
   if (returned) {
     input.value = [returned, input.value].filter(Boolean).join('\n\n');
     autosize();
@@ -2232,7 +2467,9 @@ api.onConv(async ({ convId, conv, from }) => {
   const titleChanged = prev?.title !== conv.title || prev?.busy !== conv.busy || (prev?.prompts?.length || 0) !== conv.prompts.length;
   if (titleChanged) renderTabs();
   if (prev?.title !== conv.title) refreshSide(3000); // una conversación nueva o con título nuevo
+  if (conv.files?.length) autoPreview(conv);
   if (convId !== state.activeId) return;
+  if (prev?.files?.[0]?.at !== conv.files?.[0]?.at) renderDocsButton();
   const wasEmpty = $('#main').classList.contains('is-empty');
   const isEmpty = !conv.messages.length && !conv.busy;
   // (o al revés: un /clear en la vista de chat de una pestaña de terminal)
@@ -2243,7 +2480,6 @@ api.onConv(async ({ convId, conv, from }) => {
   renderTasks();
   renderChips();
   updateComposer();
-  if (conv.busy) suggestions.delete(convId);
   if (conv.busy) suggestions.delete(convId);
   input.placeholder = conv.busy ? 'Escribe para añadir instrucciones; se enviarán en cuanto Claude pueda…' : idleHint(conv);
 });
@@ -2356,9 +2592,9 @@ function showHelp() {
   const cfg = state.config || {};
   const groups = [
     ['Mensajes', [
-      ['Enter / Shift+Enter', 'Enviar / nueva línea (mientras trabaja, Enter lo deja en cola)'],
+      ['Enter / Shift+Enter', 'Enviar / nueva línea (mientras trabaja, Enter lo deja en cola y Claude lo lee tras el paso en curso)'],
       ['Ctrl+Enter', 'Enviar ya lo que está en cola: interrumpe a Claude y se lo manda (también Enter con el cuadro vacío)'],
-      ['Esc / Ctrl+C', 'Interrumpir a Claude (lo que estaba en cola vuelve al cuadro)'],
+      ['Esc / Ctrl+C', 'Interrumpir a Claude (lo que estaba en cola se le manda)'],
       ['Esc Esc', 'Con texto, borrarlo; sin texto, volver a un mensaje anterior (/rewind)'],
       ['Ctrl+C', 'Sin nada seleccionado: borrar el texto; con el cuadro vacío, dos veces, cerrar la pestaña (pregunta antes)'],
       ['Shift+Tab', 'Cambiar de modo: preguntar → editar libre → plan → acceso total'],
@@ -2471,6 +2707,7 @@ async function openSettings(tab = 'general') {
   for (const k in clears) delete clears[k];
   settingsExt = structuredClone(cfg.ext || {});
   form.blankBare.checked = cfg.blankBare !== false;
+  form.autoPreview.checked = cfg.autoPreview !== false;
   $('#ext-q').value = toolsQuery.global = '';
   $('#settings-msg').textContent = '';
   syncSecretRows();
@@ -2724,6 +2961,7 @@ form.addEventListener('submit', async (e) => {
     appearance: readLook(),
     ext: settingsExt,
     blankBare: form.blankBare.checked,
+    autoPreview: form.autoPreview.checked,
     ...clears,
   };
   if (form.apiKey.value) patch.apiKey = form.apiKey.value;
