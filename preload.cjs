@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('api', {
   previewHtml: (html) => ipcRenderer.invoke('preview:html', html),
   previewFile: (file, cwd) => ipcRenderer.invoke('preview:file', file, cwd),
   previewWatch: (file) => ipcRenderer.invoke('preview:watch', file),
+  previewReadText: (file) => ipcRenderer.invoke('preview:readText', file),
+  previewSaveText: (file, text, ver) => ipcRenderer.invoke('preview:saveText', file, text, ver),
   showInFolder: (p) => ipcRenderer.invoke('show-in-folder', p),
   setModel: (id, model) => ipcRenderer.invoke('tab:set-model', id, model),
   setMode: (id, mode) => ipcRenderer.invoke('tab:set-mode', id, mode),

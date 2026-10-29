@@ -1747,6 +1747,8 @@ const docView = createDocView({ log: logError('vista previa') });
 const docWatch = new Map(); // webContents.id -> dejar de vigilar
 app.on('will-quit', () => docView.close());
 ipcMain.handle('preview:file', (_e, file, cwd) => (file && fs.existsSync(file) ? docView.urlFor(file, cwd) : null));
+ipcMain.handle('preview:readText', (_e, file) => docView.readText(String(file)));
+ipcMain.handle('preview:saveText', (_e, file, text, ver) => docView.saveText(String(file), text, Number(ver)));
 ipcMain.handle('preview:watch', (e, file) => {
   const wc = e.sender;
   docWatch.get(wc.id)?.();

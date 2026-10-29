@@ -283,14 +283,58 @@ function openArtifactFrom(box) {
   const text = box.querySelector('code').textContent;
   const title = kind === 'html' ? (/<title>([^<]{1,80})<\/title>/i.exec(text)?.[1].trim() || ART.html[0])
     : kind === 'markdown' ? (/^#{1,3}\s+(.{1,80})$/m.exec(text)?.[1] || ART.markdown[0]) : ART[kind][0];
-  artifact = { convId: state.activeId, kind, text, key: box.dataset.preview, title, tab: 'view' };
+  showArtifact({ convId: state.activeId, kind, text, key: box.dataset.preview, title, tab: 'view' });
+}
+function openArtifactUrl(url, convId = state.activeId) {
+  showArtifact({ convId, kind: 'url', text: url, title: new URL(url).host, tab: 'view' });
+}
+// Cada pestaña tiene su panel: al cambiar de pestaña se oculta tal cual (su <webview> sigue vivo: no se
+// recarga ni se pierde lo que se esté editando) y vuelve al volver a ella
+const artSaved = new Map(); // convId -> artifact oculto
+function showArtifact(a) {
+  artifact?.body?.remove(); // el anterior de esta pestaña, con su <webview> y su proceso
+  artifact = a;
   artEl.hidden = false;
   renderArtifact();
 }
-function openArtifactUrl(url, convId = state.activeId) {
-  artifact = { convId, kind: 'url', text: url, title: new URL(url).host, tab: 'view' };
+function stashArtifact() {
+  artifact.wide = artEl.classList.contains('wide');
+  if (artifact.body) artifact.body.hidden = true;
+  artSaved.set(artifact.convId, artifact);
+  artifact = null;
+  artEl.hidden = true;
+  artEl.classList.remove('wide');
+  artFiles.hidden = true;
+  watchFile(null);
+}
+function unstashArtifact(convId) {
+  artifact = artSaved.get(convId);
+  artSaved.delete(convId);
   artEl.hidden = false;
-  renderArtifact();
+  artEl.classList.toggle('wide', !!artifact.wide);
+  if (!artifact.body) return renderArtifact();
+  artifact.body.hidden = false;
+  renderArtifactHead();
+  if (artifact.kind === 'file') reloadFileArtifact(); // pudo cambiar mientras no se veía
+}
+// Al cambiar de pestaña: el panel de esta, o lo nuevo que tenga que enseñar
+function syncArtifact(c) {
+  if (artifact && artifact.convId !== c?.id) stashArtifact();
+  if (!c) return;
+  if (!artifact && artSaved.has(c.id)) unstashArtifact(c.id);
+  if (artPending.has(c.id)) { openArtifactUrl(artPending.get(c.id), c.id); artPending.delete(c.id); }
+  else if (filePending.has(c.id)) { openFileArtifact(filePending.get(c.id), c.id); filePending.delete(c.id); }
+}
+// La pestaña se cierra: fuera su panel, oculto o a la vista
+function dropArtifact(convId) {
+  artSaved.get(convId)?.body?.remove();
+  artSaved.delete(convId);
+  if (artifact?.convId !== convId) return;
+  artifact.body?.remove();
+  artifact = null;
+  artEl.hidden = true;
+  artEl.classList.remove('wide');
+  watchFile(null);
 }
 // Claude la abre con la herramienta vista_previa: si su pestaña no está a la vista, al volver a ella
 const artPending = new Map(); // convId -> url
@@ -311,12 +355,28 @@ function watchFile(file) {
   watching = file;
   api.previewWatch(file);
 }
-function openFileArtifact(file, convId = state.activeId) {
+// auto: lo abre solo (un documento que Claude acaba de cambiar), que no se lleva por delante lo que se edita
+async function openFileArtifact(file, convId = state.activeId, auto = false) {
   fileDismissed.get(convId)?.delete(file);
   if (artifact?.kind === 'file' && artifact.path === file && artifact.convId === convId) { reloadFileArtifact(); return; }
-  artifact = { convId, kind: 'file', path: file, text: file, title: baseName(file), tab: 'view' };
-  artEl.hidden = false;
-  renderArtifact();
+  if (artifact?.kind === 'file' && artifact.convId === convId && (auto ? await artDirty() : !(await confirmDiscard()))) return;
+  showArtifact({ convId, kind: 'file', path: file, text: file, title: baseName(file), tab: 'view' });
+}
+// Documentos editados en el panel (Word, Excel, PDF en la vista; Markdown, HTML y SVG en Código)
+const TEXT_DOC = /\.(md|markdown|html?|svg)$/i;
+async function artDirty(a = artifact) {
+  if (a?.kind !== 'file') return false;
+  if (a.draft != null) return true;
+  if (!a.wv?.isConnected) return false;
+  try { return (await a.wv.executeJavaScript('window.__editor?.estado?.() || ""')) === 'sucio'; } catch { return false; }
+}
+// Cerrar o cambiar de documento con cambios sin guardar: hay que pulsarlo dos veces
+async function confirmDiscard(a = artifact) {
+  if (!(await artDirty(a))) return true;
+  if (Date.now() - (a.discardArmed || 0) < 6000) return true;
+  a.discardArmed = Date.now();
+  toast('Hay cambios sin guardar en el documento: vuelve a pulsar para descartarlos');
+  return false;
 }
 function autoPreview(c) {
   const top = c.files?.[0];
@@ -324,14 +384,28 @@ function autoPreview(c) {
   filesSeen.set(c.id, top.at);
   if (state.config?.autoPreview === false || !AUTO_DOC.test(top.path) || fileDismissed.get(c.id)?.has(top.path)) return;
   if (artifact?.kind === 'file' && artifact.path === top.path && artifact.convId === c.id) return; // ya se ve: lo recarga su vigilancia
-  if (c.id === state.activeId) openFileArtifact(top.path, c.id);
+  if (c.id === state.activeId) openFileArtifact(top.path, c.id, true);
   else filePending.set(c.id, top.path);
 }
 // Recargar sin perder por dónde se iba (en las hojas de cálculo, el desplazamiento es de la cuadrícula)
 const SCROLLER = "(document.querySelector('.grid') || document.scrollingElement)";
 async function reloadFileArtifact() {
-  const wv = artifact?.wv;
+  const a = artifact;
+  // En Código: si ha cambiado fuera (no al guardar desde aquí), se relee; con cambios sin guardar, se avisa
+  if (a?.kind === 'file' && a.tab === 'code') {
+    const r = await api.previewReadText(a.path).catch(() => null);
+    if (artifact !== a || a.tab !== 'code' || !r || r.error || r.ver === a.ver) return;
+    if (a.draft == null) renderArtifact();
+    else textBar(a, 'Ha cambiado fuera de aquí. Descarta para ver la versión nueva.', 'err');
+    return;
+  }
+  const wv = a?.wv;
   if (!wv?.isConnected) return;
+  // Con cambios sin guardar en la vista, no se pisan (avisa ella); lo recién guardado desde ella ya se ve
+  let ed = '';
+  try { ed = await wv.executeJavaScript('window.__editor?.estado?.() || ""'); } catch {}
+  if (ed === 'sucio') { wv.executeJavaScript('window.__editor.fuera()').catch(() => {}); return; }
+  if (ed === 'guardado') return;
   let pos = null;
   try { pos = await wv.executeJavaScript(`(() => { const g = ${SCROLLER}; return g ? [g.scrollLeft, g.scrollTop] : null; })()`); } catch {}
   if (Array.isArray(pos)) {
@@ -345,8 +419,7 @@ async function reloadFileArtifact() {
 api.onPreviewChanged((file) => { if (artifact?.kind === 'file' && artifact.path === file) reloadFileArtifact(); });
 // Lista de los documentos de la conversación (al pulsar el título del panel)
 const artFiles = artEl.querySelector('.artifact-files');
-// De la pestaña actual (el panel sigue abierto al cambiar de pestaña) o, si no tiene, de la del panel
-const filesConv = () => (current()?.files?.length ? current() : state.convs.get(artifact?.convId));
+const filesConv = () => current();
 function toggleFileList(show = artFiles.hidden) {
   const c = filesConv();
   const files = c?.files || [];
@@ -368,11 +441,11 @@ function closeArtifact() {
     if (!fileDismissed.has(artifact.convId)) fileDismissed.set(artifact.convId, new Set());
     fileDismissed.get(artifact.convId).add(artifact.path);
   }
+  artifact?.body?.remove(); // fuera el <webview> y su proceso
   artifact = null;
   artEl.hidden = true;
   artEl.classList.remove('wide');
   artFiles.hidden = true;
-  artEl.querySelector('.artifact-body').innerHTML = ''; // fuera el <webview> y su proceso
   watchFile(null);
   renderDocsButton();
 }
@@ -383,9 +456,8 @@ function renderDocsButton() {
   btn.hidden = !n || !artEl.hidden;
   btn.title = n === 1 ? `Ver ${baseName(current().files[0].path)}` : `Ver los documentos de esta conversación (${n})`;
 }
-function renderArtifact() {
-  if (!artifact) return;
-  const { kind, text, tab } = artifact;
+function renderArtifactHead() {
+  const { kind, tab } = artifact;
   const file = kind === 'file';
   const title = artEl.querySelector('.artifact-title');
   title.textContent = artifact.title;
@@ -394,29 +466,39 @@ function renderArtifact() {
   artEl.querySelectorAll('.artifact-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.art === tab));
   artEl.querySelector('[data-art="window"]').hidden = kind !== 'html' && kind !== 'url' && !file;
   artEl.querySelector('[data-art="window"]').title = kind === 'url' ? 'Abrir en el navegador' : file ? 'Abrir con su aplicación' : 'Abrir en una ventana';
-  artEl.querySelector('.artifact-tabs').hidden = kind === 'url' || file;
+  artEl.querySelector('.artifact-tabs').hidden = kind === 'url' || (file && !TEXT_DOC.test(artifact.path));
+  artEl.querySelector('.artifact-tabs [data-art="code"]').classList.toggle('dirty', artifact.draft != null);
   artEl.querySelector('[data-art="save"]').hidden = kind === 'url' || file;
   artEl.querySelector('[data-art="folder"]').hidden = !file;
   artEl.querySelector('[data-art="copy"]').title = kind === 'url' ? 'Copiar la dirección' : file ? 'Copiar la ruta' : 'Copiar';
   artEl.querySelector('[data-art="wide"]').title = artEl.classList.contains('wide') ? 'Volver al chat' : 'Ampliar sobre el chat';
   renderDocsButton();
-  const body = artEl.querySelector('.artifact-body');
-  body.className = `artifact-body ${tab === 'code' ? 'is-code' : `is-${kind === 'url' || file ? 'html' : kind}`}`;
   watchFile(file ? artifact.path : null);
+}
+function renderArtifact() {
+  if (!artifact) return;
+  const { kind, text, tab } = artifact;
+  const file = kind === 'file';
+  renderArtifactHead();
+  if (!artifact.body) { artifact.body = document.createElement('div'); artEl.append(artifact.body); }
+  const body = artifact.body;
+  body.className = `artifact-body ${tab === 'code' ? 'is-code' : `is-${kind === 'url' || file ? 'html' : kind}`}`;
+  if (tab === 'code' && file) { renderTextEditor(body); return; }
   if (tab === 'code') { body.innerHTML = `<pre><code class="hljs">${highlight(text, ART[kind][2])}</code></pre>`; return; }
   if (file) {
     // Documento local: lo sirve docview.mjs (convertido si es Word, Excel o PowerPoint)
     const own = artifact;
     body.innerHTML = '<div class="preview-view loading">Abriendo…</div>';
+    const gone = () => own.body !== body || !body.isConnected; // cerrado o cambiado mientras (oculto en otra pestaña, sigue)
     api.previewFile(own.path, state.convs.get(own.convId)?.cwd).then((url) => {
-      if (artifact !== own) return;
+      if (gone()) return;
       if (!url) { body.innerHTML = `<div class="preview-error">No encuentro ${esc(own.path)}: ¿se ha movido o borrado?</div>`; return; }
       const wv = document.createElement('webview');
       wv.setAttribute('partition', 'vista-previa');
       wv.setAttribute('src', url);
       own.wv = wv;
       body.replaceChildren(wv);
-    }).catch(() => { if (artifact === own) body.innerHTML = `<div class="preview-error">No se ha podido abrir ${esc(own.path)}</div>`; });
+    }).catch(() => { if (!gone()) body.innerHTML = `<div class="preview-error">No se ha podido abrir ${esc(own.path)}</div>`; });
   } else if (kind === 'url') {
     // Página viva de un servidor local: se actualiza ella sola; el título, el suyo
     const wv = document.createElement('webview');
@@ -424,9 +506,9 @@ function renderArtifact() {
     wv.setAttribute('src', text);
     const own = artifact;
     wv.addEventListener('page-title-updated', (ev) => {
-      if (artifact !== own || !ev.title) return;
+      if (!ev.title) return;
       own.title = ev.title;
-      artEl.querySelector('.artifact-title').textContent = ev.title;
+      if (artifact === own) artEl.querySelector('.artifact-title').textContent = ev.title;
     });
     body.replaceChildren(wv);
   } else if (kind === 'html') {
@@ -443,12 +525,69 @@ function renderArtifact() {
       : d?.error ? `<div class="preview-error">No se ha podido dibujar: ${esc(d.error)}</div>` : '<div class="preview-view loading">Dibujando…</div>';
   }
 }
+// Código de un documento de texto, editable: se guarda con Ctrl+S o el botón (el borrador sigue al cambiar a Vista)
+function renderTextEditor(body) {
+  const own = artifact;
+  body.className = 'artifact-body is-code is-edit';
+  body.innerHTML = '<textarea class="art-edit" spellcheck="false" aria-label="Código del documento"></textarea>'
+    + '<div class="art-edbar" hidden><span class="msg"></span><button type="button" data-ted="discard">Descartar</button><button type="button" class="pri" data-ted="save">Guardar</button></div>';
+  const ta = body.querySelector('textarea');
+  if (own.draft != null) { ta.value = own.draft; textBar(own, `Cambios sin guardar · ${K('Ctrl+S')}`); }
+  else {
+    ta.readOnly = true;
+    api.previewReadText(own.path).then((r) => {
+      if (own.body !== body || !body.contains(ta)) return;
+      if (r?.error) { body.innerHTML = `<div class="preview-error">${esc(r.error)}</div>`; return; }
+      ta.value = r.text;
+      own.ver = r.ver;
+      ta.readOnly = false;
+    });
+  }
+  ta.addEventListener('input', () => {
+    own.draft = ta.value;
+    textBar(own, `Cambios sin guardar · ${K('Ctrl+S')}`);
+  });
+  ta.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); saveTextDoc(own); }
+    else if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); document.execCommand('insertText', false, '  '); }
+  });
+  body.querySelector('.art-edbar').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ted]');
+    if (!b) return;
+    if (b.dataset.ted === 'save') saveTextDoc(own);
+    else { own.draft = null; if (artifact === own) { renderArtifactHead(); renderArtifact(); } }
+  });
+}
+function textBar(a, text, kind = '') {
+  const bar = a.body?.querySelector('.art-edbar');
+  if (artifact === a) artEl.querySelector('.artifact-tabs [data-art="code"]').classList.toggle('dirty', a.draft != null);
+  if (!bar) return;
+  bar.hidden = !text;
+  if (!text) return;
+  bar.querySelector('.msg').textContent = text;
+  bar.classList.toggle('err', kind === 'err');
+  bar.classList.toggle('ok', kind === 'ok');
+}
+async function saveTextDoc(a) {
+  if (a.draft == null || a.saving) return;
+  const sent = a.draft;
+  a.saving = true;
+  textBar(a, 'Guardando…');
+  const r = await api.previewSaveText(a.path, sent, a.ver).catch((err) => ({ error: err.message }));
+  a.saving = false;
+  if (!r?.ok) { textBar(a, r?.error || 'No se ha podido guardar', 'err'); return; }
+  a.ver = r.ver;
+  if (a.draft !== sent) { textBar(a, `Cambios sin guardar · ${K('Ctrl+S')}`); return; } // se siguió escribiendo
+  a.draft = null;
+  textBar(a, 'Guardado', 'ok');
+  setTimeout(() => { if (a.draft == null && a.body?.querySelector('.art-edbar.ok')) textBar(a, null); }, 1400);
+}
 artEl.querySelector('.artifact-head').addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-art]');
   if (!btn || !artifact) return;
   const a = btn.dataset.art;
   if (a === 'view' || a === 'code') { if (artifact.tab !== a) { artifact.tab = a; renderArtifact(); } }
-  else if (a === 'close') closeArtifact();
+  else if (a === 'close') { if (await confirmDiscard()) closeArtifact(); }
   else if (a === 'window') { if (artifact.kind === 'file') api.openPath(artifact.path); else if (artifact.kind === 'url') window.open(artifact.text); else api.previewHtml(artifact.text); } // window.open → navegador
   else if (a === 'folder') api.showInFolder(artifact.path);
   else if (a === 'wide') { artEl.classList.toggle('wide'); btn.title = artEl.classList.contains('wide') ? 'Volver al chat' : 'Ampliar sobre el chat'; }
@@ -662,6 +801,7 @@ async function closeTab(id, { moved } = {}) {
   state.drafts.delete(id);
   state.convs.delete(id);
   disposeTerm(id);
+  dropArtifact(id);
   if (!isPicker(id) && !moved) api.closeTab(id);
   // La barra lateral la tenía como abierta aquí: si no, la daría por abierta en otra ventana
   if (!moved && side.items.some((it) => it.openIn === id)) { for (const it of side.items) if (it.openIn === id) it.openIn = null; refreshSide(); }
@@ -868,6 +1008,7 @@ function greeting() {
 
 function showView() {
   const c = current();
+  syncArtifact(c);
   const picking = !!c?.picker;
   const terminal = !!c?.terminal;
   const termView = terminal && termViewOf(c.id) === 'terminal';
@@ -1182,10 +1323,8 @@ function renderThread() {
     + (msgs !== c.messages ? '<div class="branch-note">Versión anterior, solo para leer: Claude sigue con la última, y lo que escribas continúa desde ella.</div>' : '');
   thread.dataset.count = n;
   if (thread.querySelector('.preview-view.loading')) queueDiagrams(); // el HTML pudo salir de mdCache
-  // El panel sigue abierto al cambiar de pestaña (con lo que mostraba), salvo que esta tenga algo nuevo que enseñar
-  if (artPending.has(c.id)) { openArtifactUrl(artPending.get(c.id), c.id); artPending.delete(c.id); }
-  else if (filePending.has(c.id)) { openFileArtifact(filePending.get(c.id), c.id); filePending.delete(c.id); }
-  else if (artifact?.kind === 'mermaid' && !artifact.img) renderArtifact(); // quizá ya está dibujado
+  syncArtifact(c);
+  if (artifact?.kind === 'mermaid' && !artifact.img) renderArtifact(); // quizá ya está dibujado
   if (artifact) { artFiles.hidden = true; artEl.querySelector('.artifact-title').classList.toggle('pick', !!filesConv()?.files?.length); }
   updateWorking();
 }

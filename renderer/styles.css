@@ -280,6 +280,7 @@ button.side-head:hover { background: var(--raised); color: var(--text-2); }
 .artifact-tabs button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
 .artifact-head .icon-btn[hidden] { display: none; }
 .artifact-body { flex: 1; min-height: 0; overflow: auto; }
+.artifact-body[hidden] { display: none !important; }
 .artifact-body.is-html { overflow: hidden; background: #fff; }
 .artifact-body webview { display: flex; width: 100%; height: 100%; }
 .artifact-body.is-svg, .artifact-body.is-mermaid { display: flex; align-items: flex-start; justify-content: center; padding: 24px; background: var(--bg); }
@@ -287,6 +288,20 @@ button.side-head:hover { background: var(--raised); color: var(--text-2); }
 .artifact-body.is-markdown .md { padding: 22px 28px 40px; font-size: var(--chat-fs); line-height: var(--chat-lh); }
 .artifact-body.is-code pre { margin: 0; padding: 14px 16px; font-size: 13px; line-height: 1.6; background: var(--code-bg); min-height: 100%; box-sizing: border-box; }
 .artifact-body.is-code code { background: none; border: 0; padding: 0; font-size: inherit; }
+/* Código de un documento, editable */
+.artifact-tabs button.dirty::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--accent); vertical-align: 1px; }
+.artifact-body.is-edit { position: relative; overflow: hidden; background: var(--code-bg); }
+.art-edit { display: block; width: 100%; height: 100%; box-sizing: border-box; margin: 0; padding: 14px 16px 64px; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: 13px/1.6 var(--mono, ui-monospace, Consolas, monospace); tab-size: 2; white-space: pre; overflow: auto; }
+.art-edbar { position: absolute; right: 14px; bottom: 14px; display: flex; align-items: center; gap: 4px; max-width: calc(100% - 28px); padding: 5px 5px 5px 14px; background: #2b2a27; color: #f4f3ee; border-radius: 999px; box-shadow: 0 6px 24px rgba(0, 0, 0, .22); font-size: 12.5px; }
+.art-edbar[hidden] { display: none; }
+.art-edbar .msg { margin-right: 6px; min-width: 0; }
+.art-edbar.ok { padding-right: 14px; }
+.art-edbar.ok button { display: none; }
+.art-edbar.err .msg { color: #ffb59c; }
+.art-edbar button { border-radius: 999px; padding: 5px 12px; color: inherit; white-space: nowrap; }
+.art-edbar button:hover { background: rgba(255, 255, 255, .1); }
+.art-edbar button.pri { background: #d97757; color: #fff; }
+.art-edbar button.pri:hover { background: #c6613f; }
 /* Ventana estrecha: el panel se pone encima del chat en vez de apretarlo */
 @media (max-width: 900px) {
   #artifact { position: absolute; top: 0; right: 0; bottom: 0; width: min(92vw, 640px) !important; max-width: none; min-width: 0; z-index: 30; box-shadow: -8px 0 24px rgba(0, 0, 0, .18); }
