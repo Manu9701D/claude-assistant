@@ -63,7 +63,10 @@ Después, crea tus **presets** (carpeta, modelo, instrucciones…) desde «Crear
   ```
   (en Sway: `bindsym Ctrl+Shift+space exec …` y `exec … --hidden`). La bandeja necesita el módulo `tray` de
   Waybar, y el recorte, un portal con captura (`xdg-desktop-portal-hyprland` o `xdg-desktop-portal-wlr`).
-- KDE Plasma pide permiso para los atajos globales la primera vez; GNOME funciona como en Fedora.
+- KDE Plasma pide permiso para los atajos globales con un diálogo («Se han solicitado atajos de teclado
+  globales») al abrir la app por primera vez y cada vez que los cambias en la app: pulsa **Aceptar**. Si lo
+  cancelas, se vuelve a pedir una vez en el siguiente arranque. Después se pueden ver o cambiar en
+  Preferencias del sistema › Teclado › Atajos › Claude Assistant. GNOME funciona como en Fedora.
 - `ca` abre la ventana nueva (tecla T) en la terminal de `$TERMINAL` o, si no, en la primera que encuentre
   (Ptyxis, Consola de GNOME, Konsole, kitty, Alacritty, foot, Ghostty, WezTerm…).
 

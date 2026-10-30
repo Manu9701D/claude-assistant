@@ -85,6 +85,7 @@ const DEFAULTS = {
   userName: '',            // para el saludo
   presets: null,           // perfiles de inicio de pestaña (ver DEFAULT_PRESETS)
   presetsSeeded: null,     // ids de DEFAULT_PRESETS ya incorporados alguna vez
+  kdeHotkeysAsked: null,   // KDE: combinación de atajos que ya se volvió a pedir al portal (resetKdeHotkeys)
   tokenDiet: 0,            // versión ya aplicada de la migración de ahorro de tokens
   githubSeeded: false,     // cuenta de GitHub de Trabajo ya puesta
   setupDone: false,        // asistente de primer arranque ya visto (#setup en la interfaz)
@@ -243,6 +244,15 @@ function applyTheme() {
 }
 nativeTheme.on('updated', applyTheme);
 
+// Linux con Wayland: una ventana oculta no pinta su primer fotograma si su HTML muestra algo antes de un
+// <script src> (index.html), y ready-to-show no llega nunca (la ventana no se abría): al terminar de cargar, igualmente
+function onceReadyToShow(w, fn) {
+  let done = false;
+  const go = () => { if (!done && !w.isDestroyed()) { done = true; fn(); } };
+  w.once('ready-to-show', go);
+  if (process.platform === 'linux') w.webContents.once('did-finish-load', () => setTimeout(go, 200));
+}
+
 function createWindow(bounds) {
   nativeTheme.themeSource = config.theme || 'system';
   const t = TITLEBAR[currentScheme()];
@@ -272,12 +282,12 @@ function createWindow(bounds) {
   w.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   if (!win) {
     win = w;
-    w.once('ready-to-show', () => { if (!startHidden) w.show(); });
+    onceReadyToShow(w, () => { if (!startHidden) w.show(); });
     w.on('close', (e) => {
       if (!quitting) { e.preventDefault(); w.hide(); }
     });
   } else {
-    w.once('ready-to-show', () => w.show());
+    onceReadyToShow(w, () => w.show());
     // Al cerrar otra ventana, sus pestañas vuelven a la principal sin perder la conversación
     w.on('close', () => {
       if (quitting) return;
@@ -400,9 +410,13 @@ function splitPane(host) {
   return p;
 }
 
+// Wayland (KDE, GNOME): una ventana ya abierta no puede ponerse delante sola (focus() solo la marca en la
+// barra de tareas, sin token de activación); al volver a mostrarla, el compositor sí la activa
+const WAYLAND = process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY);
 function showWindow(w = win) {
   if (!w || w.isDestroyed()) return;
   if (w.isMinimized()) w.restore();
+  if (WAYLAND && w.isVisible() && !w.isFocused()) w.hide();
   w.show();
   w.focus();
   post(w, 'ui:focus-input');
@@ -520,18 +534,51 @@ function registerGnomeHotkeys() {
   gsettings('set', GNOME_KEYS, 'custom-keybindings', `[${next.map((p) => `'${p}'`).join(', ')}]`);
 }
 
+// KDE con Wayland: los atajos van por el portal, que pide permiso la primera vez con un diálogo. Chromium, si
+// ya están dados de alta, no los vuelve a pedir (BindShortcuts), y KDE los deja inactivos al cerrarse la app:
+// a partir del segundo arranque no responden. Se reactivan aquí con su tecla guardada. Si el diálogo se
+// canceló (o se perdió), KDE los guarda sin tecla («none»): se dan de baja para que se pidan otra vez, solo
+// una vez por combinación de atajos (si se cancela a propósito, no se insiste)
+const KDE_WAYLAND = process.platform === 'linux' && !TEST_PROFILE && !GNOME_WAYLAND
+  && (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY)
+  && /kde/i.test(process.env.XDG_CURRENT_DESKTOP || '');
+const kglobalaccel = (method, ...args) => execFileSync('gdbus', ['call', '--session', '--dest', 'org.kde.kglobalaccel', '--object-path', '/kglobalaccel', '--method', `org.kde.KGlobalAccel.${method}`, ...args], { timeout: 5000, stdio: 'ignore' });
+function kdeHotkeyEntries() {
+  const file = path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, '.config'), 'kglobalshortcutsrc');
+  const group = (fs.readFileSync(file, 'utf8').split(/^\[claude-assistant\]$/m)[1] || '').split(/^\[/m)[0];
+  return [...group.matchAll(/^([0-9A-F]{32}-[^=]+)=([^,]*),[^,]*,(.*)$/gm)].map(([, id, keys, name]) => ({ id, keys, name }));
+}
+function resetKdeHotkeys() {
+  const asked = Object.keys(HOTKEY_ACTIONS).map((k) => config[k] || '').join('|');
+  if (config.kdeHotkeysAsked === asked) return;
+  const dead = kdeHotkeyEntries().filter((e) => e.keys === 'none');
+  if (!dead.length) return;
+  for (const e of dead) kglobalaccel('unregister', 'claude-assistant', e.id);
+  config.kdeHotkeysAsked = asked;
+  saveConfig();
+}
+// setShortcutKeys sin teclas y con SetPresent (2): kglobalaccel conserva las guardadas y vuelve a capturarlas
+function wakeKdeHotkeys() {
+  for (const e of kdeHotkeyEntries()) {
+    if (e.keys === 'none') continue;
+    try { kglobalaccel('setShortcutKeys', `[${['claude-assistant', e.id, 'Claude Assistant', e.name].map((s) => JSON.stringify(s)).join(', ')}]`, '@a(ai) []', '2'); } catch {}
+  }
+}
+
 // Devuelve los nombres de config de los atajos que no se han podido registrar
 function registerHotkey() {
   globalShortcut.unregisterAll();
   if (GNOME_WAYLAND) {
     try { registerGnomeHotkeys(); return []; } catch (e) { logError('atajos de GNOME')(e); } // sin gsettings: lo de siempre
   }
+  if (KDE_WAYLAND) try { resetKdeHotkeys(); } catch {} // sin el archivo o sin gdbus: solo el portal
   const reg = (key, fn) => { try { return globalShortcut.register(key, fn); } catch { return false; } };
   const failed = [];
   // La de pruebas no se queda el de mostrar/ocultar (es de la app en uso), pero sí el de voz, para probarlo
   if (!TEST_PROFILE && config.hotkey && !reg(config.hotkey, toggleWindow)) failed.push('hotkey');
   if (config.voiceHotkey && !reg(config.voiceHotkey, assist.hotkey)) failed.push('voiceHotkey');
   if (config.shotHotkey && !reg(config.shotHotkey, assist.snipHotkey)) failed.push('shotHotkey');
+  if (KDE_WAYLAND) setTimeout(() => { try { wakeKdeHotkeys(); } catch {} }, 2000); // tras abrirse la sesión del portal
   return failed;
 }
 
@@ -2320,7 +2367,9 @@ app.whenReady().then(() => {
   if (startAccount && startAccount !== accounts.activeKey()) try { accounts.profile(startAccount); winAccount.set(win, startAccount); } catch {}
   createTray();
   schedules.start();
-  registerHotkey();
+  // KDE: el portal puede pedir permiso para los atajos con un diálogo; si sale antes que la ventana, esta lo tapa
+  if (KDE_WAYLAND && !startHidden) win.once('show', () => setTimeout(registerHotkey, 1000));
+  else registerHotkey();
   applyAutoStart();
   assist.preload();
   if (WHATSAPP_LINKED()) whatsapp.open();

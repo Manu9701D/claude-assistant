@@ -1,7 +1,8 @@
 // Inspeccionar la app de pruebas por CDP. Por defecto, la ventana principal; con --overlay, la del
 // asistente por voz; con --snip, la del recorte; con --whatsapp, la de WhatsApp en segundo plano;
 // con --vista-previa, la de un bloque HTML del chat; con --secundaria, la primera ventana sacada arrastrando una pestaña. Con --mac, la app de pruebas
-// del Mac (node tools/mac.cjs start), por un túnel SSH.
+// del Mac (node tools/mac.cjs start), por un túnel SSH. Con CA_CDP_PORT, la app que escuche en ese puerto
+// (p. ej. una máquina virtual de Linux abierta con --remote-debugging-port).
 //   node tools/cdp.cjs eval "<expresión JS>"   ejecuta en la interfaz (admite promesas) y muestra el resultado
 //   node tools/cdp.cjs shot [archivo.png]      captura de la ventana (por defecto, captura.png en %TEMP%)
 //   node tools/cdp.cjs key "Meta+T"            pulsa esa combinación (Alt, Control, Meta, Shift + tecla)
@@ -43,7 +44,7 @@ async function isSecondary(page) {
 }
 
 (async () => {
-  const port = mac ? await macTunnel() : devtoolsPort();
+  const port = mac ? await macTunnel() : Number(process.env.CA_CDP_PORT) || devtoolsPort();
   if (!port) throw new Error('La app de pruebas no está abierta (node tools/dev.cjs start).');
   const pages = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).filter((p) => ['page', 'webview'].includes(p.type) && p.url.includes(TARGETS[flag] || 'index.html'));
   let page = pages[0];
