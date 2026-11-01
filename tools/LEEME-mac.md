@@ -167,6 +167,17 @@ Los de la app van con **⌘**; **Ctrl** queda para Claude Code, como en su termi
 Para usar ⌘ en un atajo global, escríbelo como `Command+Shift+Space`. Evita ⌃Espacio solo: macOS lo usa
 para cambiar de idioma del teclado.
 
+### Mejorar la app
+
+El preset **Mejorar Claude Assistant** viene instalado: ábrelo y cuéntale a Claude qué falla o qué te
+gustaría que hiciera la app. Trabaja sobre una copia del código (la app que usas no cambia mientras tanto),
+lo prueba en una ventana de pruebas aparte y, cuando le das el visto bueno, la app ofrece reiniciarse con
+la versión nueva; tus pestañas vuelven con su conversación. También puede guardar los cambios en un
+`.patch` en el Escritorio para compartirlos.
+
+Si la versión nueva no llega a arrancar, la app vuelve sola a la original y te lo avisa. Para volver a
+ella a mano: *Volver a la versión original* en el icono de la barra de menús (tus cambios se conservan).
+
 ---
 
 ## Dónde se guarda todo
@@ -178,12 +189,16 @@ para cambiar de idioma del teclado.
 | Cuentas | Llavero de macOS + `accounts.json` cifrado en la carpeta de configuración |
 | Modelo de voz | `~/.cache/claude-assistant-whisper/` |
 | Registro de errores | `errores.log` en la carpeta de configuración |
+| Tus mejoras de la app | `mejoras/` en la carpeta de configuración (`app`: la copia que se edita; `aplicada`: la que se usa) |
 
 ## Actualizar
 
 Descarga el `.dmg` nuevo y arrastra la app a Aplicaciones (*Reemplazar*). Con la carpeta del código,
 `bash instalar.sh` en la versión nueva, que cierra la anterior y la sustituye. Tu configuración, presets y
 conversaciones se conservan. Claude Code se actualiza solo.
+
+Si habías mejorado la app con el preset *Mejorar Claude Assistant*, tras actualizar arranca la versión
+original: abre el preset y pídele que integre tus cambios en la nueva.
 
 ## Desinstalar
 

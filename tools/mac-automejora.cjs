@@ -19,6 +19,14 @@ fs.mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const read = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 const results = [];
+let finished = false;
+// Si el script se queda sin nada pendiente antes de acabar, es un fallo (no un 0 silencioso)
+process.on('beforeExit', () => {
+  if (finished) return;
+  console.error('✘ La prueba se ha quedado a medias (nada pendiente)');
+  fs.writeFileSync(path.join(OUT, 'informe-automejora.json'), JSON.stringify({ results, error: 'a medias' }, null, 2));
+  process.exit(1);
+});
 const check = (name, ok, detail = '') => { results.push({ name, ok: !!ok, detail }); console.log(`${ok ? '✔' : '✘'} ${name}${detail ? ` — ${detail}` : ''}`); return ok; };
 
 // La herramienta del preset, con el Node de la app (como mejorar/ca)
@@ -40,9 +48,19 @@ async function connect(ms = 120000) {
       let seq = 0;
       const pending = new Map();
       ws.onmessage = (m) => { const d = JSON.parse(m.data); pending.get(d.id)?.(d); };
-      const call = (method, params) => new Promise((resolve) => { const id = ++seq; pending.set(id, resolve); ws.send(JSON.stringify({ id, method, params })); });
+// Sin respuesta (la app se ha cerrado o colgado) falla: una promesa que no se resuelve nunca dejaría a
+      // Node sin nada pendiente y saldría con 0, como si todo hubiera ido bien
+      const call = (method, params) => new Promise((resolve, reject) => {
+        const id = ++seq;
+        const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP sin respuesta: ${method}`)); }, 15000);
+        pending.set(id, (d) => { clearTimeout(timer); pending.delete(id); resolve(d); });
+        ws.send(JSON.stringify({ id, method, params }));
+      });
+      ws.onclose = () => { for (const [id, done] of pending) done({ id, error: { message: 'CDP cerrado' } }); };
       const evaluate = async (expression) => {
-        const r = (await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })).result;
+        const d = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+        if (d.error) throw new Error(d.error.message);
+        const r = d.result;
         if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
         return r.result.value;
       };
@@ -56,7 +74,7 @@ async function connect(ms = 120000) {
         const r = await call('Page.captureScreenshot', { format: 'png' });
         fs.writeFileSync(path.join(OUT, `${name}.png`), Buffer.from(r.result.data, 'base64'));
       };
-      if (await waitFor('typeof state !== "undefined" && !!state.config', 60000)) return { ws, evaluate, waitFor, shot };
+      if (await waitFor('typeof state !== "undefined" && !!state.config', 60000)) return { ws, evaluate, waitFor, shot, fire: (expression) => ws.send(JSON.stringify({ id: ++seq, method: 'Runtime.evaluate', params: { expression } })) };
       ws.close();
     } catch {}
   }
@@ -68,9 +86,12 @@ async function restartFromDialog(app, label) {
   const offered = await app.waitFor('document.querySelector("#update-dialog")?.open', 20000);
   check(`${label}: la app ofrece reiniciarse`, offered);
   const before = read(path.join(DATA, 'ready.json'))?.at || 0;
-  await app.evaluate('document.querySelector("#upd-now").click(), 1').catch(() => {});
+  // Sin esperar respuesta: la app se cierra al momento
+  app.fire('document.querySelector("#upd-now").click()');
+  await sleep(500);
   app.ws.close();
   for (const end = Date.now() + 90000; Date.now() < end && (read(path.join(DATA, 'ready.json'))?.at || 0) <= before; await sleep(1000));
+  check(`${label}: la app vuelve a abrirse`, (read(path.join(DATA, 'ready.json'))?.at || 0) > before);
   await sleep(3000);
   return connect();
 }
@@ -124,6 +145,7 @@ async function restartFromDialog(app, label) {
 
   app.ws.close();
   fs.writeFileSync(path.join(OUT, 'informe-automejora.json'), JSON.stringify({ results }, null, 2));
+  finished = true;
   const failed = results.filter((r) => !r.ok);
   console.log(failed.length ? `\nFallan ${failed.length}: ${failed.map((r) => r.name).join(', ')}` : '\nAutomejora: todo bien.');
   process.exit(failed.length ? 1 : 0);

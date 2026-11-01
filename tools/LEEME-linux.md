@@ -70,9 +70,22 @@ Después, crea tus **presets** (carpeta, modelo, instrucciones…) desde «Crear
 - `ca` abre la ventana nueva (tecla T) en la terminal de `$TERMINAL` o, si no, en la primera que encuentre
   (Ptyxis, Consola de GNOME, Konsole, kitty, Alacritty, foot, Ghostty, WezTerm…).
 
+## Mejorar la app
+
+El preset **Mejorar Claude Assistant** viene instalado: ábrelo y cuéntale a Claude qué falla o qué te
+gustaría que hiciera la app. Trabaja sobre una copia del código (la app que usas no cambia mientras tanto),
+lo prueba en una ventana de pruebas aparte y, con tu visto bueno, la app ofrece reiniciarse con la versión
+nueva; tus pestañas vuelven con su conversación. También puede guardar los cambios en un `.patch` en el
+Escritorio para compartirlos.
+
+Si la versión nueva no llega a arrancar, la app vuelve sola a la original y te lo avisa. A mano: *Volver a
+la versión original* en el icono de la bandeja (tus cambios se conservan), o abrir la app con `--original`.
+Tras instalar una versión nueva de la app arranca la original: pídele al preset que integre tus cambios.
+
 ## Datos
 
 - Configuración: `~/.config/claude-assistant/`
+- Tus mejoras de la app: `~/.config/claude-assistant/mejoras/` (`app`: la copia que se edita; `aplicada`: la que se usa)
 - Conversaciones: las de Claude Code, en `~/.claude/projects`
 - Modelo de voz: `~/.cache/claude-assistant-whisper/`
 

@@ -23,6 +23,9 @@ async function connect() {
   throw new Error('La app no ha abierto su ventana en 2 minutos.');
 }
 
+// Si se queda sin nada pendiente antes de acabar, es un fallo (no un 0 silencioso)
+process.on('beforeExit', () => { console.error('✘ La prueba se ha quedado a medias (nada pendiente)'); process.exit(1); });
+
 (async () => {
   const page = await connect();
   const ws = new WebSocket(page.webSocketDebuggerUrl);
@@ -35,9 +38,18 @@ async function connect() {
     if (d.method === 'Runtime.exceptionThrown') errors.push(d.params.exceptionDetails.exception?.description || d.params.exceptionDetails.text);
     pending.get(d.id)?.(d);
   };
-  const call = (method, params) => new Promise((resolve) => { const id = ++seq; pending.set(id, resolve); ws.send(JSON.stringify({ id, method, params })); });
+  // Sin respuesta falla: una promesa sin resolver dejaría a Node sin nada pendiente y saldría con 0
+  const call = (method, params) => new Promise((resolve, reject) => {
+    const id = ++seq;
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP sin respuesta: ${method}`)); }, 60000);
+    pending.set(id, (d) => { clearTimeout(timer); pending.delete(id); resolve(d); });
+    ws.send(JSON.stringify({ id, method, params }));
+  });
+  ws.onclose = () => { for (const [id, done] of pending) done({ id, error: { message: 'CDP cerrado' } }); };
   const evaluate = async (expression) => {
-    const r = (await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })).result;
+    const d = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    if (d.error) throw new Error(d.error.message);
+    const r = d.result;
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
     return r.result.value;
   };
