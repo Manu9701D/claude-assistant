@@ -74,6 +74,18 @@ function ensureTerm(conv) {
   term.loadAddon(new WebLinksAddon.WebLinksAddon((_e, uri) => window.open(uri)));
   term.open(el);
   const t = { id: conv.id, term, fit, el, started: false, exited: false, busy: false };
+  // xterm repinta la selección aunque la terminal no se vea (se salta su pausa) y, oculta, no guarda el
+  // ancho de las letras: cada una recalcula el diseño de toda la ventana (segundos con chats largos).
+  // Oculta solo se apunta; se pinta al volver a mostrarla (fitTerm)
+  const rs = term._core?._renderService;
+  if (typeof rs?.handleSelectionChanged === 'function') {
+    const paint = rs.handleSelectionChanged.bind(rs);
+    t.paintSelection = () => { const a = t.selPending; t.selPending = null; if (a) paint(...a); };
+    rs.handleSelectionChanged = (...a) => {
+      if (el.hidden || termHost.hidden) t.selPending = a;
+      else { t.selPending = null; paint(...a); }
+    };
+  }
   terms.set(conv.id, t);
 
   term.onData((data) => {
@@ -156,6 +168,7 @@ let lastDims = (() => { try { return JSON.parse(localStorage.getItem('termDims')
 function fitTerm(t) {
   try { t.fit.fit(); } catch { return; }
   if (t.el.hidden || termHost.hidden) return;
+  t.paintSelection?.();
   const { cols, rows } = t.term;
   if (cols === lastDims?.cols && rows === lastDims?.rows) return;
   lastDims = { cols, rows };

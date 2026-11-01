@@ -99,8 +99,10 @@ if pgrep -xq "$APP_NAME"; then
   if inside_app; then
     # Se cambia en cuanto se cierre la app, y se vuelve a abrir sola
     LOG="$SRC/instalar.log"
-    nohup bash -c "while pgrep -xq '$APP_NAME'; do sleep 1; done; rm -rf '$DEST'; ditto '$BUILT' '$DEST'; xattr -dr com.apple.quarantine '$DEST' 2>/dev/null; open '$DEST'" >"$LOG" 2>&1 &
-    disown
+    # En una sesión propia y colgado de launchd: al cerrarse, la app termina lo que lanzaron sus pestañas
+    SWAP="while pgrep -xq '$APP_NAME'; do sleep 1; done; sleep 1; rm -rf '$DEST'; ditto '$BUILT' '$DEST'; xattr -dr com.apple.quarantine '$DEST' 2>/dev/null; open '$DEST'"
+    if command -v perl >/dev/null 2>&1; then perl -e 'use POSIX "setsid"; fork and exit; setsid; exec @ARGV' /bin/bash -c "$SWAP" </dev/null >"$LOG" 2>&1
+    else launchctl submit -l "es.claude-assistant.instalar.$$" -- /bin/bash -c "$SWAP"; fi
     printf '\n\033[1;33m%s\033[0m\n' "Falta un paso: cierra Claude Assistant del todo (⌘Q). En cuanto se cierre se instala la versión nueva y se abre sola."
     exit 0
   fi

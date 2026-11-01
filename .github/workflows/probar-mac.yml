@@ -56,6 +56,24 @@ jobs:
           node tools/mac-smoke.cjs mac-test
       - name: Automejora
         run: node tools/mac-automejora.cjs mac-test
+      - name: Actualizar desde la propia app (actualizar.sh)
+        run: |
+          APP="/Applications/Claude Assistant.app"
+          CFG="$HOME/Library/Application Support/claude-assistant/config.json"
+          pgrep -xq "Claude Assistant" || { open "$APP"; sleep 10; }
+          before=$(shasum "$CFG" | cut -d' ' -f1)
+          touch "$APP/Contents/version-vieja"
+          # Como desde una pestaña: deja el cambio preparado y espera al ⌘Q
+          CA_ACTUALIZAR_DENTRO=1 bash dist/actualizar.sh | tee mac-test/actualizar.txt
+          grep -q "cierra Claude Assistant" mac-test/actualizar.txt
+          osascript -e 'quit app "Claude Assistant"'
+          for i in $(seq 1 60); do [ ! -e "$APP/Contents/version-vieja" ] && pgrep -xq "Claude Assistant" && break; sleep 1; done
+          cat ~/Library/Caches/claude-assistant-actualizacion/actualizar.log || true
+          [ ! -e "$APP/Contents/version-vieja" ] || { echo "✗ No se ha sustituido la app"; exit 1; }
+          pgrep -xq "Claude Assistant" || { echo "✗ No se ha vuelto a abrir"; exit 1; }
+          [ "$(shasum "$CFG" | cut -d' ' -f1)" = "$before" ] || echo "(config.json cambiado por la app al arrancar)"
+          python3 -c "import json,sys;c=json.load(open(sys.argv[1]));assert c['presets'],'sin presets';print('✓ presets:',', '.join(p['name'] for p in c['presets']))" "$CFG"
+          echo "✓ Actualizada desde la app y vuelta a abrir"
       - name: Captura del escritorio, registros y procesos
         if: always()
         run: |

@@ -24,3 +24,5 @@ jobs:
           path: |
             dist/*.dmg
             dist/LEEME-mac.md
+            dist/ACTUALIZAR-CON-CLAUDE.md
+            dist/actualizar.sh
