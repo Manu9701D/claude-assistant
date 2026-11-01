@@ -109,13 +109,15 @@ export function touchedFiles(name, input, cwd) {
   // Un nombre suelto puede ser de la carpeta de la pestaña o de otra a la que se entra (cd "C:/…"):
   // se prueba con todas las que salen; solo cuenta el que luego cambia de verdad
   const bases = new Set(cwd ? [cwd] : []);
-  const add = (p) => {
+  // Rutas de red (\\equipo\…) solo si las nombra Write/Edit: sacadas de un comando suelen ser trozos
+  // mal cortados, y comprobarlas bloquea el proceso principal segundos mientras Windows busca ese equipo
+  const add = (p, net = false) => {
     p = String(p || '').trim().replace(/^file:\/\/\/?/i, '');
     if (!p || p.includes('://') || /[*?<>|$]/.test(p) || !PREVIEW_EXT.has(extOf(p))) return;
     p = absolute(p);
     for (const f of path.isAbsolute(p) ? [p] : [...bases].map((b) => path.join(b, p))) {
       const n = path.normalize(f);
-      if (!/[\\/](node_modules|\.git)[\\/]/.test(n)) out.add(n);
+      if (!/[\\/](node_modules|\.git)[\\/]/.test(n) && (net || !/^[\\/]{2}/.test(n))) out.add(n);
     }
   };
   const scan = (s) => {
@@ -129,7 +131,7 @@ export function touchedFiles(name, input, cwd) {
     for (const m of s.replace(QUOTED_DOC, ' ').matchAll(BARE_DOC)) add(m[1]);
   };
   if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(name)) {
-    add(input.file_path || input.notebook_path);
+    add(input.file_path || input.notebook_path, true);
     if (name === 'Write' && SCRIPT_EXT.test(String(input.file_path || ''))) {
       bases.add(path.dirname(path.resolve(cwd || '.', absolute(String(input.file_path)))));
       scan(input.content);

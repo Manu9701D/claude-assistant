@@ -290,6 +290,9 @@ test('documentos que Claude crea o cambia: entran en conv.files para la vista pr
   const otra = path.join(ROOT, 'otra');
   assert.deepEqual(touchedFiles('Bash', { command: `D="${otra.replace(/\\/g, '/')}"\ncd "$D" && node g.cjs && ls -l gastos.xlsx` }, cwd),
     [path.join(cwd, 'gastos.xlsx'), path.join(otra, 'gastos.xlsx')]);
+  // Rutas de red sacadas de un comando (comprobarlas bloquea mientras Windows busca el equipo): fuera
+  assert.deepEqual(touchedFiles('Bash', { command: 'ls //PID)/x.png; cp a \\\\servidor\\c\\informe.pdf .' }, cwd), []);
+  assert.deepEqual(touchedFiles('Write', { file_path: '\\\\servidor\\c\\informe.pdf' }, cwd), [path.normalize('\\\\servidor\\c\\informe.pdf')]);
 
   // Lo de las carpetas temporales no es un documento del usuario: esta parte va en una carpeta normal
   const work = fs.mkdtempSync(path.join(os.homedir(), '.termchat-test-'));
