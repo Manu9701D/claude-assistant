@@ -3085,6 +3085,8 @@ api.onConfigChanged((cfg) => {
   applyConfigUi(cfg);
   if (current()?.picker) renderPicker();
   renderPresetList();
+  // Una programada que acaba de lanzarse: «próxima» y «última» al día (sin pisar el editor abierto)
+  if ($('#settings').open && !schedEditing && form.querySelector('[data-panel=sched].active')) renderSched();
 });
 
 // Con varias cuentas, cada ventana se marca con el color de la suya, como los perfiles de Chrome: barra de

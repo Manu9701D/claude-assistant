@@ -18,7 +18,9 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+// La copia editable: mejorar/ca ejecuta la herramienta de la app instalada (la de la copia puede ser de una
+// versión anterior, o faltar) y le dice aquí dónde está la copia
+const DIR = process.env.CA_SELF_DIR ? path.resolve(process.env.CA_SELF_DIR) : path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (f, d = null) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
 const ENV = JSON.parse(fs.readFileSync(path.join(DIR, 'mejorar', 'entorno.json'), 'utf8'));
 const STATE = path.join(ENV.data, 'mejoras.json');

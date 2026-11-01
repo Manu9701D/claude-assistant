@@ -76,7 +76,8 @@ try {
     await import(pathToFileURL(path.join(HERE, 'main.mjs')).href);
   } else {
     process.env.CA_SELF_FALLBACK = 'no arrancaba'; // lo hereda el proceso nuevo, para avisar
-    app.relaunch({ execPath: process.env.APPIMAGE || process.execPath, args: process.argv.slice(1).filter((a) => a !== '--restore') });
+    // Con --restore si venía de un reinicio: la original reabre las pestañas (también la del preset, que puede ver por qué)
+    app.relaunch({ execPath: process.env.APPIMAGE || process.execPath, args: process.argv.slice(1) });
     app.exit(0);
   }
 }

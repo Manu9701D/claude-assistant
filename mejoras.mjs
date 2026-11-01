@@ -70,14 +70,16 @@ export async function prepareSelf({ dataDir, appDir, exe, exeArgs, log }) {
       else if (st) fs.rmSync(link, { recursive: true, force: true });
       fs.symlinkSync(path.join(appDir, 'node_modules'), link, process.platform === 'win32' ? 'junction' : 'dir');
     }
-    // Envoltorios para ejecutar la herramienta con el Node que trae la app (el usuario puede no tener Node)
+    // Envoltorios para ejecutar la herramienta con el Node que trae la app (el usuario puede no tener Node).
+    // La herramienta es la de la app instalada: la de la copia se queda en la versión con la que se creó
     const tool = path.join(dir, 'mejorar');
+    const script = path.join(appDir, 'mejorar', 'herramienta.mjs');
     await fs.promises.mkdir(tool, { recursive: true });
     await fs.promises.writeFile(path.join(tool, 'entorno.json'), JSON.stringify({ exe, exeArgs, original: appDir, data: dataDir, build, platform: process.platform }, null, 2));
     if (process.platform === 'win32') {
-      await fs.promises.writeFile(path.join(tool, 'ca.cmd'), `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${exe}" "%~dp0herramienta.mjs" %*\r\n`);
+      await fs.promises.writeFile(path.join(tool, 'ca.cmd'), `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\nset "CA_SELF_DIR=%~dp0.."\r\n"${exe}" "${script}" %*\r\n`);
     } else {
-      await fs.promises.writeFile(path.join(tool, 'ca'), `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${exe}" "$(dirname "$0")/herramienta.mjs" "$@"\n`, { mode: 0o755 });
+      await fs.promises.writeFile(path.join(tool, 'ca'), `#!/bin/sh\nCA_SELF_DIR="$(dirname "$0")/.." ELECTRON_RUN_AS_NODE=1 exec "${exe}" "${script}" "$@"\n`, { mode: 0o755 });
     }
   } catch (e) {
     log?.('mejoras', e);

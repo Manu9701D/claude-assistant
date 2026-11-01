@@ -583,6 +583,8 @@ function wakeKdeHotkeys() {
 // Devuelve los nombres de config de los atajos que no se han podido registrar
 function registerHotkey() {
   globalShortcut.unregisterAll();
+  // Wayland: el portal agrupa los atajos por app (claude-assistant) y la de pruebas le quitaría los suyos a la app en uso
+  if (TEST_PROFILE && WAYLAND) return [];
   if (GNOME_WAYLAND) {
     try { registerGnomeHotkeys(); return []; } catch (e) { logError('atajos de GNOME')(e); } // sin gsettings: lo de siempre
   }
@@ -2135,6 +2137,7 @@ ipcMain.handle('accounts:new-window', (_e, key) => { newAccountWindow(key); });
 // icono de la barra de tareas, como Chrome con los perfiles. mark: { color, email, icon } o null
 ipcMain.on('win:mark', (e, mark) => {
   const w = senderWin(e);
+  if (!w || w.isDestroyed()) return; // cerrada mientras llegaba el mensaje
   if (mark?.color) winTint.set(w, mark.color); else winTint.delete(w);
   const t = titlebarFor(w);
   setOverlay(w, t);

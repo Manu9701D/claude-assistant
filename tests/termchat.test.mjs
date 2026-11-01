@@ -291,18 +291,20 @@ test('documentos que Claude crea o cambia: entran en conv.files para la vista pr
   assert.deepEqual(touchedFiles('Bash', { command: `D="${otra.replace(/\\/g, '/')}"\ncd "$D" && node g.cjs && ls -l gastos.xlsx` }, cwd),
     [path.join(cwd, 'gastos.xlsx'), path.join(otra, 'gastos.xlsx')]);
 
+  // Lo de las carpetas temporales no es un documento del usuario: esta parte va en una carpeta normal
+  const work = fs.mkdtempSync(path.join(os.homedir(), '.termchat-test-'));
+  try {
   // Un script que escribe un Excel: entra al cambiar el Excel, en la herramienta que lo ejecuta.
   // Un PDF que solo se lee (no cambia) no entra
-  fs.mkdirSync(cwd, { recursive: true });
-  const xlsx = path.join(cwd, 'ventas.xlsx');
-  const pdf = path.join(cwd, 'viejo.pdf');
+  const xlsx = path.join(work, 'ventas.xlsx');
+  const pdf = path.join(work, 'viejo.pdf');
   fs.writeFileSync(pdf, 'x');
   fs.utimesSync(pdf, new Date('2020-01-01'), new Date('2020-01-01'));
   const now = new Date().toISOString();
   const { id, conv, append } = tab([]);
-  conv.cwd = cwd;
+  conv.cwd = work;
   append(user('Hazme el Excel'));
-  append({ ...assistant([{ type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: path.join(cwd, 'hacer.py'), content: "wb.save('ventas.xlsx')" } }]), timestamp: now });
+  append({ ...assistant([{ type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: path.join(work, 'hacer.py'), content: "wb.save('ventas.xlsx')" } }]), timestamp: now });
   append({ ...user([{ type: 'tool_result', tool_use_id: 'w1', content: 'ok' }]), timestamp: now });
   await sleep(300);
   assert.deepEqual(conv.files || [], []);
@@ -311,5 +313,27 @@ test('documentos que Claude crea o cambia: entran en conv.files para la vista pr
   append({ ...user([{ type: 'tool_result', tool_use_id: 'b1', content: 'ok' }]), timestamp: now });
   await until(() => conv.files?.length);
   assert.deepEqual(conv.files.map((f) => f.path), [xlsx]);
+
+  // No entran: una captura en la carpeta temporal, el index.html de una app (carga sus scripts de la
+  // carpeta del proyecto) ni una plantilla; un archivo vacío espera a tener algo. Un HTML suelto, sí
+  const shot = path.join(cwd, 'captura.png');
+  const shell = path.join(work, 'index.html');
+  const tpl = path.join(work, 'correo.html');
+  const empty = path.join(work, 'informe.pdf');
+  const page = path.join(work, 'informe.html');
+  fs.mkdirSync(cwd, { recursive: true });
+  for (const [file, body] of [[shot, 'png'], [shell, '<div id="root"></div><script type="module" src="/src/main.js"></script>'],
+    [tpl, '<p>Hola {{ user.name }}</p>'], [empty, ''], [page, '<h1>Informe</h1><script src="https://cdn.jsdelivr.net/npm/chart.js"></script>']]) fs.writeFileSync(file, body);
+  const cmd = [shot, shell, tpl, empty, page].map((p) => `"${p.replace(/\\/g, '/')}"`).join(' ');
+  append({ ...assistant([{ type: 'tool_use', id: 'b2', name: 'Bash', input: { command: `node gen.js ${cmd}` } }]), timestamp: now });
+  append({ ...user([{ type: 'tool_result', tool_use_id: 'b2', content: 'ok' }]), timestamp: now });
+  await until(() => conv.files?.length === 2);
+  assert.deepEqual(conv.files.map((f) => f.path), [page, xlsx]);
+  fs.writeFileSync(empty, '%PDF');
+  append({ ...assistant([{ type: 'tool_use', id: 'b3', name: 'Bash', input: { command: 'ls' } }]), timestamp: now });
+  append({ ...user([{ type: 'tool_result', tool_use_id: 'b3', content: 'ok' }]), timestamp: now });
+  await until(() => conv.files?.length === 3);
+  assert.equal(conv.files[0].path, empty);
   tc.detach(id);
+  } finally { fs.rmSync(work, { recursive: true, force: true }); }
 });
