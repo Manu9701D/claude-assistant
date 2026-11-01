@@ -81,6 +81,28 @@ const absolute = (p) => {
   if (process.platform === 'win32' && /^\/[a-z](\/|$)/i.test(p)) return `${p[1].toUpperCase()}:${p.slice(2) || '\\'}`;
   return p;
 };
+// Lo que no es un documento para el usuario, aunque Claude lo toque: lo de las carpetas temporales
+// (capturas de comprobación, borradores del scratchpad, imágenes pegadas) y los HTML de una aplicación
+// o web (cargan sus scripts de la carpeta del proyecto: fuera de ella salen en blanco) o plantillas
+const TEMP_DIRS = [...new Set([os.tmpdir(), ...(process.platform === 'win32' ? [] : ['/tmp', '/var/tmp', '/private/tmp', '/private/var/folders'])]
+  .flatMap((d) => { try { return [d, fs.realpathSync(d)]; } catch { return [d]; } }))]
+  .map((d) => path.normalize(d).replace(/[\\/]+$/, '') + path.sep);
+const sameCase = (s) => (process.platform === 'win32' || process.platform === 'darwin' ? s.toLowerCase() : s);
+const LOCAL_SCRIPT = /<script\b[^>]*\bsrc\s*=\s*["']?(?!https?:|data:|blob:|\/\/)[^"'\s>]/i;
+// Plantillas de servidor (Django, Jinja, Liquid…): {% … %}, o {{ … }} sin scripts (con ellos puede ser Vue)
+const TEMPLATE = (s) => /\{%[\s\S]{0,200}?%\}/.test(s) || (!/<script\b/i.test(s) && /\{\{[\s\S]{0,200}?\}\}/.test(s));
+export function isDocument(file) {
+  const f = sameCase(path.normalize(file));
+  if (TEMP_DIRS.some((d) => f.startsWith(sameCase(d)))) return false;
+  if (!/\.html?$/i.test(file)) return true;
+  let head = '';
+  try {
+    const fd = fs.openSync(file, 'r');
+    try { const buf = Buffer.alloc(256 * 1024); head = buf.toString('utf8', 0, fs.readSync(fd, buf, 0, buf.length, 0)); } finally { fs.closeSync(fd); }
+  } catch { return false; }
+  return !LOCAL_SCRIPT.test(head) && !TEMPLATE(head);
+}
+
 export function touchedFiles(name, input, cwd) {
   if (!input || typeof input !== 'object') return [];
   const out = new Set();
@@ -535,10 +557,13 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     }
     for (const f of live ? [...t.maybe.keys()] : touch?.docs || []) {
       const m = t.maybe.get(f);
-      let mtime;
-      try { mtime = fs.statSync(f).mtimeMs; } catch { continue; }
+      let st;
+      try { st = fs.statSync(f); } catch { continue; }
+      const mtime = st.mtimeMs;
       if (mtime < m.since - 2000 || mtime === m.mtime) continue;
+      if (!st.size) continue; // recién creado y aún vacío: se vuelve a mirar cuando tenga algo
       m.mtime = mtime;
+      if (!isDocument(f)) continue;
       t.conv.files = [{ path: f, at: mtime, live }, ...(t.conv.files || []).filter((x) => x.path !== f)].slice(0, 30); // live: se acaba de cambiar (se abre solo)
     }
   }
@@ -733,6 +758,8 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
   // pregunta, plan: se teclearía en él) o mientras arranca, y los comandos (/x, !), hasta que acabe
   const typedLater = (m) => /^[/!]/.test(m.text);
   const GAP = 900; // entre dos mensajes tecleados (más seguidos, Claude Code pierde el Enter del segundo)
+  const IMG_TAIL = /\s*("[^"]*claude-assistant-[0-9a-f]{8}\.\w+"|\S*claude-assistant-[0-9a-f]{8}\.\w+)$/; // imagen de send
+  const IMG_GAP = 400; // entre imágenes pegadas (Claude Code lee cada archivo antes de la siguiente)
   function pump(t) {
     clearTimeout(t.drainTimer);
     t.drainTimer = null;
@@ -773,10 +800,18 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       t.reply = null;
       flush(t, true);
     }
-    // Los comandos (/x) y el modo bash (!) se teclean; el resto se pega para conservar los saltos de línea
-    if (/^[/!]/.test(full) && !full.includes('\n')) write(id, full);
-    else write(id, `\x1b[200~${full}\x1b[201~`);
-    setTimeout(() => write(id, '\r'), 120);
+    // Las imágenes (rutas al final, ver send) se pegan antes y cada una sola: así Claude Code las adjunta
+    // como [Image #n] (las versiones recientes no las sacan de en medio de un texto)
+    const imgs = [];
+    for (let m; (m = full.match(IMG_TAIL));) { imgs.unshift(m[1]); full = full.slice(0, m.index); }
+    imgs.forEach((f, i) => setTimeout(() => write(id, `\x1b[200~${f}\x1b[201~`), i * IMG_GAP));
+    const typeText = () => {
+      // Los comandos (/x) y el modo bash (!) se teclean; el resto se pega para conservar los saltos de línea
+      if (!imgs.length && /^[/!]/.test(full) && !full.includes('\n')) write(id, full);
+      else if (full) write(id, `\x1b[200~${imgs.length ? ' ' : ''}${full}\x1b[201~`);
+      setTimeout(() => write(id, '\r'), 120);
+    };
+    if (imgs.length) setTimeout(typeText, imgs.length * IMG_GAP); else typeText();
   }
 
   // Un mensaje del chat: se pega en la terminal y se envía con Enter

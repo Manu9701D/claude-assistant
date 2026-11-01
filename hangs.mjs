@@ -1,11 +1,13 @@
 // Cuelgues, apuntados en cuelgues.log de la carpeta de datos:
 // - Una interfaz deja de responder: se pausa su JavaScript con el depurador (llega aunque esté en un bucle)
 //   y se apunta dónde estaba (la pila); al volver, cuánto ha durado.
-// - El proceso principal se bloquea: cuánto y qué mensaje de la interfaz estaba atendiendo (ipcMain envuelto).
+// - El proceso principal se bloquea: cuánto, qué mensaje de la interfaz estaba atendiendo (ipcMain envuelto)
+//   y su pila (la saca un hilo aparte, ver mainStack).
 // No hace nada mientras todo va bien: un temporizador cada 500 ms y una marca por mensaje.
 import { app, ipcMain } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 
 export function watchHangs(dataDir, describe = () => '') {
   const file = path.join(dataDir, 'cuelgues.log');
@@ -32,13 +34,14 @@ export function watchHangs(dataDir, describe = () => '') {
   // mensaje en curso es el último que vio el segundo temporizador (como mucho 100 ms antes)
   let last = Date.now();
   let seen = null;
+  const beat = mainStack(write, file);
   setInterval(() => {
     const now = Date.now();
     const lag = now - last - 500;
     if (lag > 1500) write(`proceso principal bloqueado ${lag} ms${seen ? ` (atendiendo «${seen.channel}»)` : ''}${where() ? ` · ${where()}` : ''}`);
     last = now;
   }, 500).unref();
-  setInterval(() => { seen = busy; }, 100).unref();
+  setInterval(() => { seen = busy; beat(); }, 100).unref();
 
   // Interfaces (ventanas, vistas y webviews del panel)
   // El aviso de Chromium ('unresponsive') tarda ~15 s y solo salta si se le manda algo (un clic, una tecla):
@@ -76,6 +79,56 @@ export function watchHangs(dataDir, describe = () => '') {
   });
 
   return { log: write };
+}
+
+// Pila del proceso principal bloqueado: mientras está bloqueado no corre nada suyo, así que la saca un hilo
+// aparte. El principal marca un contador cada 100 ms; si no avanza en 2 s, el hilo lo pausa con el inspector
+// (llega aunque esté en un bucle; si espera a algo nativo, como un execFileSync, se para al volver de él, en
+// quien lo llamó) y apunta la pila directamente en el archivo, por si no se recupera.
+const WATCHER = `
+const { workerData: { beat: sab, file } } = require('node:worker_threads');
+const fs = require('node:fs');
+const inspector = require('node:inspector');
+const beat = new Int32Array(sab);
+const s = new inspector.Session();
+s.connectToMainThread();
+const post = (m, p = {}) => new Promise((res, rej) => s.post(m, p, (e, r) => (e ? rej(e) : res(r))));
+let want = null;
+s.on('Debugger.paused', ({ params }) => { if (want) { want(params); want = null; } else post('Debugger.resume').catch(() => {}); });
+let seen = Atomics.load(beat, 0), since = Date.now(), done = false;
+setInterval(async () => {
+  const n = Atomics.load(beat, 0);
+  if (n !== seen) { seen = n; since = Date.now(); done = false; return; }
+  if (done || Date.now() - since < 2000) return;
+  done = true;
+  let text;
+  try {
+    await post('Debugger.enable');
+    const p = await new Promise((res, rej) => {
+      want = res;
+      post('Debugger.pause').catch(rej);
+      setTimeout(() => rej(new Error('no se ha podido pausar en 30 s')), 30000);
+    });
+    text = 'proceso principal, pila:\\n' + ((p.callFrames || []).slice(0, 30).map((f) =>
+      '  ' + (f.functionName || '(anónima)') + ' ' + String(f.url || '').replace(/^.*[\\\\/]/, '') + ':' + (f.location.lineNumber + 1) + ':' + ((f.location.columnNumber || 0) + 1)).join('\\n') || '  (vacía)');
+  } catch (err) {
+    want = null;
+    text = 'proceso principal, sin pila: ' + err.message;
+  } finally {
+    await post('Debugger.resume').catch(() => {});
+    await post('Debugger.disable').catch(() => {});
+  }
+  try { fs.appendFileSync(file, new Date().toISOString() + ' ' + text + '\\n'); } catch {}
+}, 250);
+`;
+function mainStack(write, file) {
+  const beat = new Int32Array(new SharedArrayBuffer(4));
+  try {
+    const w = new Worker(WATCHER, { eval: true, workerData: { beat: beat.buffer, file } });
+    w.on('error', (err) => write(`vigilante del proceso principal: ${err.message}`));
+    w.unref();
+  } catch (err) { write(`vigilante del proceso principal: ${err.message}`); }
+  return () => Atomics.add(beat, 0, 1);
 }
 
 // Depurador conectado y activo, sin pararse nunca solo: cualquier pausa que no pida pauseStack

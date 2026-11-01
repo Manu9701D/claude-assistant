@@ -1,0 +1,73 @@
+# Compila Claude Assistant para macOS, lo instala desde el .dmg en un Mac virtual de GitHub y lo prueba
+# de verdad (tools/mac-smoke.cjs por CDP: puesta a punto, pestañas con Claude Code en node-pty, terminal,
+# Configuración) y su automejora (tools/mac-automejora.cjs: el preset «Mejorar Claude Assistant» cambia,
+# prueba y aplica una versión, y una rota vuelve sola a la original). Capturas, informes y registros quedan
+# en los artefactos de la ejecución.
+# Con el secreto CLAUDE_CODE_OAUTH_TOKEN (de `claude setup-token`) también prueba un turno de chat.
+name: Probar en macOS
+on:
+  workflow_dispatch:
+  push:
+    branches: [prueba-mac]
+
+jobs:
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26 # Tahoe, Apple Silicon (arm64)
+          - runner: macos-15-intel # Sequoia, Intel (x64)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Versión de macOS
+        run: sw_vers; uname -m
+      - name: Compilar el .dmg
+        run: node tools/build-mac.cjs
+      - name: Pruebas unitarias
+        working-directory: dist/mac-src
+        run: node --test tests/*.test.mjs
+      - name: Instalar Claude Code (el oficial)
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          ~/.local/bin/claude --version
+          # Con cuenta: sin el asistente de bienvenida de Claude Code (tema, inicio de sesión)
+          if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then echo '{"hasCompletedOnboarding":true,"theme":"dark"}' > ~/.claude.json; fi
+      - name: Instalar la app desde el .dmg
+        run: |
+          dmg=$(ls dist/*.dmg)
+          ls -lh "$dmg"
+          hdiutil attach "$dmg" -nobrowse -mountpoint /Volumes/ca
+          ditto "/Volumes/ca/Claude Assistant.app" "/Applications/Claude Assistant.app"
+          hdiutil detach /Volumes/ca
+          xattr -dr com.apple.quarantine "/Applications/Claude Assistant.app" || true
+          codesign --verify --verbose "/Applications/Claude Assistant.app"
+      - name: Abrir la app y probarla
+        run: |
+          if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then extra=(--env "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN"); fi
+          open -n "/Applications/Claude Assistant.app" "${extra[@]}" --args --remote-debugging-port=9223
+          node tools/mac-smoke.cjs mac-test
+      - name: Automejora
+        run: node tools/mac-automejora.cjs mac-test
+      - name: Captura del escritorio, registros y procesos
+        if: always()
+        run: |
+          mkdir -p mac-test
+          screencapture -x mac-test/00-escritorio.png || true
+          cp ~/Library/Application\ Support/claude-assistant/*.log ~/Library/Application\ Support/claude-assistant/mejoras.json mac-test/ 2>/dev/null || true
+          ps -axo pid,rss,command | grep -i "claude" | grep -v grep > mac-test/procesos.txt || true
+          pkill -f "Claude Assistant" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prueba-mac-${{ matrix.runner }}
+          path: |
+            mac-test/
+            dist/*.dmg

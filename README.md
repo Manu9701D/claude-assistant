@@ -71,6 +71,16 @@ El preset **Optimizaciones** trabaja en `claude-assistant-dev`, una copia de pru
 
 El procedimiento completo para Claude está en `CLAUDE.md`.
 
+### En las copias para otros
+
+Las copias para otros (Linux, macOS o la fuente limpia de `build-src.cjs` en Windows, con `mejorar\ca.cmd`) no llevan `dev` ni `apply`: traen el preset **Mejorar Claude Assistant** (`mejoras.mjs`, sembrado una vez), que hace lo mismo en local:
+
+1. Al arrancar, la app prepara una copia editable de su código en `<datos>/mejoras/app` (git: rama `original` = la instalada, `main` = la del usuario; `node_modules` es un enlace a los de la app instalada). Allí está `mejorar/CLAUDE.md`, las instrucciones del preset.
+2. Claude edita esa copia y la prueba con `mejorar/ca` (`prueba`, `eval`, `captura`, `parar`, `comprobar`, `registros`, `estado`): una instancia de pruebas con sus propios datos.
+3. `mejorar/ca aplicar "…"` congela la copia en `<datos>/mejoras/aplicada` y la app ofrece reiniciarse. `boot.mjs` (el `main` de las copias) arranca la aplicada en vez de la instalada.
+4. Si la aplicada falla al cargarse o no llega a la interfaz, `boot.mjs` vuelve sola a la original y la app lo avisa (el motivo, en `mejoras.json` y en `ca estado`). También a mano: *Volver a la versión original* en la bandeja, `ca original` o `--original`.
+5. Tras instalar una versión nueva de la app arranca la original hasta que `ca actualizar` mezcla los cambios en ella. `ca parche` deja un `.patch` en el Escritorio para compartirlos.
+
 ## Pestañas de terminal
 
 Cada pestaña ejecuta el `claude` interactivo de siempre dentro de la app (pseudoconsola + xterm.js), así que el uso del plan es exactamente el de la terminal. Se mantienen las pestañas, los presets (carpeta, carpetas extra, modelo, effort, permisos, instrucciones, Chrome, Windows-MCP, plugins, compactación, cuenta de GitHub), las cuentas, la barra de uso y la reapertura de pestañas al reiniciar (con `--resume`).

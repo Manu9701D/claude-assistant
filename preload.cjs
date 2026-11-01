@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld('api', {
   onTakeTab: on('ui:take-tab'),
   onSplit: on('ui:split'),
   dropTab: (id, opts) => ipcRenderer.invoke('tab:drop', id, opts),
+  tabDroppedHere: (where) => ipcRenderer.send('tab:dropped-here', where),
   onAsk: on('ui:ask'),
   answer: (rid, ok) => ipcRenderer.send(`ui:answer:${rid}`, ok),
   onPtyRestart: on('pty:restart'),

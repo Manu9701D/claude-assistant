@@ -26,7 +26,9 @@ function termTheme() {
 darkQuery.addEventListener('change', () => { for (const t of terms.values()) t.term.options.theme = termTheme(); });
 
 // Letra de la terminal (Configuración → Apariencia, ver applyAppearance en app.js)
-const TERM_MONO = "'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, 'SF Mono', Menlo, 'Adwaita Mono', 'Noto Sans Mono', 'DejaVu Sans Mono', monospace";
+// En Linux, con el respaldo de símbolos de styles.css (⎿ ✻ ⏵… no vienen en todas las distribuciones)
+const TERM_MONO = "'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, 'SF Mono', Menlo, 'Adwaita Mono', 'Noto Sans Mono', 'DejaVu Sans Mono', "
+  + (api.platform === 'linux' ? "'CA Simbolos', 'CA Simbolos Tec', 'CA Simbolos Mat', " : '') + 'monospace';
 const termLook = { fontSize: 14, fontFamily: TERM_MONO };
 function setTermLook(fontSize, font) {
   const fontFamily = font ? `${font}, ${TERM_MONO}` : TERM_MONO;
