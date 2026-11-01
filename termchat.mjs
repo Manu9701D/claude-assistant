@@ -733,6 +733,8 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
   // pregunta, plan: se teclearía en él) o mientras arranca, y los comandos (/x, !), hasta que acabe
   const typedLater = (m) => /^[/!]/.test(m.text);
   const GAP = 900; // entre dos mensajes tecleados (más seguidos, Claude Code pierde el Enter del segundo)
+  const IMG_TAIL = /\s*("[^"]*claude-assistant-[0-9a-f]{8}\.\w+"|\S*claude-assistant-[0-9a-f]{8}\.\w+)$/; // imagen de send
+  const IMG_GAP = 400; // entre imágenes pegadas (Claude Code lee cada archivo antes de la siguiente)
   function pump(t) {
     clearTimeout(t.drainTimer);
     t.drainTimer = null;
@@ -773,10 +775,18 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       t.reply = null;
       flush(t, true);
     }
-    // Los comandos (/x) y el modo bash (!) se teclean; el resto se pega para conservar los saltos de línea
-    if (/^[/!]/.test(full) && !full.includes('\n')) write(id, full);
-    else write(id, `\x1b[200~${full}\x1b[201~`);
-    setTimeout(() => write(id, '\r'), 120);
+    // Las imágenes (rutas al final, ver send) se pegan antes y cada una sola: así Claude Code las adjunta
+    // como [Image #n] (las versiones recientes no las sacan de en medio de un texto)
+    const imgs = [];
+    for (let m; (m = full.match(IMG_TAIL));) { imgs.unshift(m[1]); full = full.slice(0, m.index); }
+    imgs.forEach((f, i) => setTimeout(() => write(id, `\x1b[200~${f}\x1b[201~`), i * IMG_GAP));
+    const typeText = () => {
+      // Los comandos (/x) y el modo bash (!) se teclean; el resto se pega para conservar los saltos de línea
+      if (!imgs.length && /^[/!]/.test(full) && !full.includes('\n')) write(id, full);
+      else if (full) write(id, `\x1b[200~${imgs.length ? ' ' : ''}${full}\x1b[201~`);
+      setTimeout(() => write(id, '\r'), 120);
+    };
+    if (imgs.length) setTimeout(typeText, imgs.length * IMG_GAP); else typeText();
   }
 
   // Un mensaje del chat: se pega en la terminal y se envía con Enter

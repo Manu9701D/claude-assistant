@@ -19,6 +19,7 @@ import { readOutput, stopTask } from './bgtasks.mjs';
 import { createDocView, PREVIEW_EXT } from './docview.mjs';
 import { createSchedules, cleanSchedule, nextRun } from './schedules.mjs';
 import { watchHangs } from './hangs.mjs';
+import { SELF_ID, selfPreset, prepareSelf, selfStateFile } from './mejoras.mjs';
 import { z } from 'zod';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -110,7 +111,10 @@ const HOME = os.homedir();
 // Presets iniciales (los propios, en personal.mjs; sin él, ninguno). Cada uno: carpeta, modelo y modo
 // propios (vacío = el general), carpetas extra, Claude in Chrome, instrucciones añadidas y un mensaje de arranque opcional.
 const personal = fs.existsSync(path.join(__dirname, 'personal.mjs')) ? await import('./personal.mjs') : {};
-const DEFAULT_PRESETS = personal.DEFAULT_PRESETS || [];
+// Las copias para otros traen el de automejora (mejoras.mjs)
+const DEFAULT_PRESETS = personal.DEFAULT_PRESETS || [selfPreset(DATA_DIR)];
+// Código de la app instalada (boot.mjs lo pasa al arrancar con la versión mejorada, que está en otra carpeta)
+const ORIGINAL_DIR = process.env.CA_APP_ORIGINAL || __dirname;
 
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
@@ -461,6 +465,8 @@ function refreshTray(list = []) {
     ...(multi ? [{ label: 'Nueva ventana con', submenu: list.map((a) => ({ label: a.email, enabled: !a.locked, click: () => newAccountWindow(a.key) })) }] : []),
     { label: 'Configuración', click: () => { showWindow(); post(win, 'ui:settings'); } },
     { label: 'WhatsApp en segundo plano', click: () => whatsapp.showForLogin() },
+    // Arrancada con la versión del preset «Mejorar Claude Assistant» (boot.mjs)
+    ...(process.env.CA_APP_CUSTOM ? [{ label: 'Volver a la versión original', click: useOriginal }] : []),
     { type: 'separator' },
     { label: 'Salir', click: () => { quitting = true; app.quit(); } },
   ]));
@@ -951,15 +957,17 @@ function restartApp() {
   const update = readJson(UPDATE_FILE, null);
   // También la cuenta de la ventana principal: si no, al volver mostraría la activa mientras sus pestañas siguen con otra
   writeJson(RESTORE_FILE, { at: Date.now(), active: tabActive, updated: !!update, account: accountOfWin(win), tabs });
-  const args = process.argv.slice(1).filter((a) => !['--restore', '--hidden'].includes(a) && !a.startsWith('--account='));
-  if (IS_WIN) {
+  const args = process.argv.slice(1).filter((a) => !['--restore', '--hidden', '--original'].includes(a) && !a.startsWith('--account='));
+  // Las copias para otros no traen tools/ (ni watchdog): como fuera de Windows
+  const watchdog = path.join(__dirname, 'tools', 'watchdog.cjs');
+  if (IS_WIN && fs.existsSync(watchdog)) {
     const watch = { pid: process.pid, exe: process.execPath, args: [...args, '--restore'], appDir: __dirname, dataDir: DATA_DIR, prev: update?.prev || null };
-    spawn(process.execPath, [path.join(__dirname, 'tools', 'watchdog.cjs')], {
+    spawn(process.execPath, [watchdog], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', CA_WATCH: JSON.stringify(watch) },
       detached: true, stdio: 'ignore', windowsHide: true,
     }).unref();
   } else {
-    // Fuera de Windows no hay watchdog (las copias repartidas no se actualizan desde dev): la reabre Electron
+    // Sin watchdog (fuera de Windows o en las copias repartidas, que no se actualizan desde dev): la reabre Electron
     app.relaunch({ execPath: process.env.APPIMAGE || process.execPath, args: [...args, '--restore'] });
   }
   quitting = true;
@@ -967,19 +975,19 @@ function restartApp() {
 }
 
 // Cambios aplicados: se ofrece reiniciar (ahora, cuando terminen las pestañas o más tarde)
-function offerRestart() {
+function offerRestart(text) {
   showWindow();
-  post(win, 'update:ready', { busy: terminalsBusy() });
+  post(win, 'update:ready', { busy: terminalsBusy(), text });
 }
 
-// tools/apply.cjs y tools/dev.cjs piden el reinicio dejando este archivo ({ mode: 'offer' | 'now' }).
+// tools/apply.cjs y tools/dev.cjs piden el reinicio dejando este archivo ({ mode: 'offer' | 'now', text? }).
 // Así avisar no ejecuta el código nuevo, que podría estar roto.
 const REQUEST_FILE = path.join(DATA_DIR, 'restart-request.json');
 function checkRestartRequest() {
   const req = readJson(REQUEST_FILE, null);
   if (!req) return;
   fs.rmSync(REQUEST_FILE, { force: true });
-  if (req.mode === 'now') restartApp(); else offerRestart();
+  if (req.mode === 'now') restartApp(); else offerRestart(req.text);
 }
 fs.rmSync(REQUEST_FILE, { force: true });
 fs.watchFile(REQUEST_FILE, { interval: 700 }, checkRestartRequest);
@@ -1577,17 +1585,33 @@ function askWindow(w, payload) {
 // suya, a una ventana nueva (o, si era la única, se mueve la ventana). Sus procesos siguen igual.
 // id null: una pestaña nueva sin usar (solo el selector de presets, sin sesión)
 const TAB_GRAB = { x: 170, y: 22 }; // dónde queda el cursor respecto a la ventana nueva (sobre su pestaña)
-ipcMain.handle('tab:drop', async (e, id, { alone, at } = {}) => {
+// Wayland no da la posición del puntero ni la de las ventanas (getCursorScreenPoint devuelve 0,0): la interfaz
+// dice si se soltó en su barra, y la ventana que recibe una pestaña ajena avisa aquí de dónde cayó
+let tabDropHere = null;
+ipcMain.on('tab:dropped-here', (e, { x, strip } = {}) => { tabDropHere = { w: senderWin(e), x, strip, t: Date.now() }; });
+ipcMain.handle('tab:drop', async (e, id, { alone, at, over } = {}) => {
   const from = senderWin(e);
   const conv = id ? terminals.get(id) : null;
   if (id && !conv) return null;
-  const p = at || screen.getCursorScreenPoint(); // at: solo para probarlo por CDP
+  let target, x;
+  if (WAYLAND && !at) {
+    if (over === 'strip') return null; // dentro de su barra: solo se reordena
+    if (!tabDropHere) await new Promise((r) => setTimeout(r, 200)); // el aviso de la otra ventana puede llegar después
+    const d = tabDropHere;
+    tabDropHere = null;
+    if (d && d.strip && d.w !== from && alive(d.w) && Date.now() - d.t < 3000) { target = d.w; x = d.x; }
+    else if (alone && !from.host) return null; // mover la ventana: en Wayland lo hace el compositor, no la app
+  }
+  const p = at || (WAYLAND ? { x: 0, y: 0 } : screen.getCursorScreenPoint()); // at: solo para probarlo por CDP
   const inside = (w, strip) => {
     const b = areaOf(w);
     return p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + (strip ? TITLEBAR.dark.height : b.height);
   };
-  if (inside(from, true)) return null; // dentro de su barra: solo se reordena
-  const target = [...appWins].find((w) => w !== from && alive(w) && w.isVisible() && !w.isMinimized() && inside(w, true));
+  if (!(WAYLAND && !at)) {
+    if (inside(from, true)) return null; // dentro de su barra: solo se reordena
+    target = [...appWins].find((w) => w !== from && alive(w) && w.isVisible() && !w.isMinimized() && inside(w, true));
+    x = target && p.x - target.getContentBounds().x;
+  }
   if (target) {
     // A una ventana con otra cuenta: se pregunta allí; si no se acepta, la pestaña se queda donde estaba
     const acc = accountOfWin(target);
@@ -1599,14 +1623,14 @@ ipcMain.handle('tab:drop', async (e, id, { alone, at } = {}) => {
       owner.set(id, target);
       setTabAccount(id, acc); // después de cambiarla de ventana: la vuelve a abrir la de destino
     }
-    post(target, conv ? 'ui:take-tab' : 'ui:new-conv', { conv, x: p.x - target.getContentBounds().x });
+    post(target, conv ? 'ui:take-tab' : 'ui:new-conv', { conv, x });
     target.focus();
   } else if (alone && !from.host) {
     from.setPosition(p.x - TAB_GRAB.x, p.y - TAB_GRAB.y);
     return null;
   } else {
     const [width, height] = hostOf(from).getSize();
-    const nw = createWindow({ x: p.x - TAB_GRAB.x, y: p.y - TAB_GRAB.y, width, height });
+    const nw = createWindow(WAYLAND && !at ? { width, height } : { x: p.x - TAB_GRAB.x, y: p.y - TAB_GRAB.y, width, height }); // en Wayland la coloca el compositor
     if (accountOfWin(from)) winAccount.set(nw, accountOfWin(from)); // con la misma cuenta
     if (conv) {
       owner.set(id, nw);
@@ -2202,11 +2226,11 @@ ipcMain.handle('accounts:login', async (e) => {
 ipcMain.handle('accounts:login-code', (_e, code) => accounts.sendCode(code));
 ipcMain.handle('accounts:login-cancel', () => accounts.cancelLogin());
 ipcMain.handle('config:pick-dir', async (e, defaultPath) => {
-  const r = await dialog.showOpenDialog(hostOf(senderWin(e)), { properties: ['openDirectory'], defaultPath: defaultPath && fs.existsSync(defaultPath) ? defaultPath : config.cwd });
+  const r = await dialog.showOpenDialog(hostOf(senderWin(e)), { properties: ['openDirectory'], title: 'Elegir carpeta', defaultPath: defaultPath && fs.existsSync(defaultPath) ? defaultPath : config.cwd });
   return r.canceled ? null : r.filePaths[0];
 });
 ipcMain.handle('config:pick-file', async (e) => {
-  const r = await dialog.showOpenDialog(hostOf(senderWin(e)), { properties: ['openFile'], ...(IS_WIN ? { filters: [{ name: 'Ejecutable', extensions: ['exe', 'cmd', 'js'] }] } : {}) });
+  const r = await dialog.showOpenDialog(hostOf(senderWin(e)), { properties: ['openFile'], title: 'Elegir el ejecutable de claude', ...(IS_WIN ? { filters: [{ name: 'Ejecutable', extensions: ['exe', 'cmd', 'js'] }] } : {}) });
   return r.canceled ? null : r.filePaths[0];
 });
 
@@ -2392,4 +2416,27 @@ app.whenReady().then(() => {
   assist.preload();
   if (WHATSAPP_LINKED()) whatsapp.open();
   loadMeta().then(refreshUsage);
+  if (config.presets.some((p) => p.id === SELF_ID) && !process.env.CA_SOURCE) {
+    // La instancia que se abre con un AppImage o con el exe empaquetado no necesita la carpeta como argumento
+    const packaged = !!process.env.APPIMAGE || path.resolve(ORIGINAL_DIR).startsWith(path.resolve(process.resourcesPath));
+    prepareSelf({ dataDir: DATA_DIR, appDir: ORIGINAL_DIR, exe: process.env.APPIMAGE || process.execPath, exeArgs: packaged ? [] : [ORIGINAL_DIR], log: (kind, e) => logError(kind)(e) });
+  }
+  // boot.mjs ha vuelto a la versión original: la mejorada no arrancaba o la app instalada es más nueva
+  const fallback = process.env.CA_SELF_FALLBACK;
+  delete process.env.CA_SELF_FALLBACK; // que no lo hereden los reinicios siguientes
+  if (fallback && Notification.isSupported()) {
+    new Notification({
+      title: 'Se ha abierto la versión original',
+      body: fallback === 'actualizada'
+        ? 'Claude Assistant se ha actualizado. Para recuperar tus mejoras, pídeselo al preset «Mejorar Claude Assistant».'
+        : 'Tu versión mejorada no arrancaba. El preset «Mejorar Claude Assistant» puede ver por qué.',
+    }).show();
+  }
 });
+
+// Vuelve a la versión instalada: boot.mjs ya no arranca la mejorada (sigue en <datos>/mejoras/app)
+function useOriginal() {
+  const file = selfStateFile(DATA_DIR);
+  writeJson(file, { ...readJson(file, {}), activa: false, motivo: 'a mano', intento: 0 });
+  restartApp();
+}

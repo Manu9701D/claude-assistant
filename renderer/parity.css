@@ -7,6 +7,11 @@
 .chip .dot.m-acceptEdits { background: #8a6fd1; }
 .chip .dot.m-plan { background: #3d8a8a; }
 .composer-bar .chip { flex: none; }
+/* Columna estrecha (barra lateral + panel, o ventana pequeña): los botones de la derecha bajan juntos
+   a otra línea en vez de salirse con Enviar; con sitio, todo sigue en una */
+.composer-bar { flex-wrap: wrap; row-gap: 6px; }
+.composer-end { flex: 1 1 0; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.composer-end .composer-hint { width: 0; } /* el texto de ayuda no cuenta para decidir si cabe */
 .composer-hint { min-width: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; height: 16px; line-height: 16px; overflow: hidden; }
 .composer-hint > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .composer-hint > span + span::before { content: "·"; margin: 0 6px; }

@@ -16,6 +16,8 @@ const PERSONAL = fs.existsSync(PERSONAL_FILE)
 
 // dest: carpeta de la copia; build: configuración de electron-builder (sin appId ni productName)
 function prepareSource(dest, build) {
+  // Antes, los enlaces (p. ej. un junction a node_modules): rmSync con recursive vaciaría su destino en Windows
+  try { for (const e of fs.readdirSync(dest)) if (fs.lstatSync(path.join(dest, e)).isSymbolicLink()) fs.unlinkSync(path.join(dest, e)); } catch {}
   fs.rmSync(dest, { recursive: true, force: true });
   const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { cwd: ROOT, encoding: 'utf8' })
     .split('\n').filter((f) => f && !EXCLUDE.some((re) => re.test(f)));
@@ -46,7 +48,13 @@ function prepareSource(dest, build) {
     directories: { output: 'out' },
     ...build,
   };
+  // Arranca por boot.mjs, que elige entre esta versión y la mejorada con el preset «Mejorar Claude Assistant»
+  pkg.main = 'boot.mjs';
   fs.writeFileSync(path.join(dest, 'package.json'), JSON.stringify(pkg, null, 2));
+  // Versión de la copia: si la app instalada cambia, boot.mjs no arranca la mejorada hasta integrarla (mejorar/herramienta.mjs)
+  const git = (...a) => execFileSync('git', a, { cwd: ROOT, encoding: 'utf8' }).trim();
+  const id = `${git('log', '-1', '--format=%cs-%h')}${git('status', '--porcelain') ? '+' + Date.now().toString(36) : ''}`;
+  fs.writeFileSync(path.join(dest, 'build.json'), JSON.stringify({ id }, null, 2));
   return pkg;
 }
 

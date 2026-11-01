@@ -17,7 +17,8 @@
 .picker-sub { color: var(--muted); font-size: 13px; margin: 0 0 28px; }
 .picker-sub kbd { font-size: 11px; }
 body.has-bg .picker-sub { color: var(--text-2); } /* sobre una imagen de fondo, el gris tenue no se lee */
-#preset-grid { width: 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
+/* auto-fit + centrado: con pocos presets (primer arranque) las tarjetas quedan en medio, bajo el título */
+#preset-grid { width: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 210px)); justify-content: center; gap: 14px; }
 
 .preset-card {
   --c: var(--muted);

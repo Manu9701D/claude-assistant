@@ -107,6 +107,7 @@
             <button type="button" id="model-chip" class="chip ghost-chip" title="Modelo de esta pestaña"></button>
             <button type="button" id="effort-chip" class="chip ghost-chip" title="Esfuerzo de razonamiento de esta pestaña"></button>
             <button type="button" id="mode-chip" class="chip ghost-chip" title="Modo de permisos (Shift+Tab)"></button>
+            <div class="composer-end">
             <span class="composer-hint" id="composer-hint"></span>
             <button type="button" id="art-docs" class="icon-btn sm" hidden>
               <svg viewBox="0 0 20 20"><path d="M11.5 2.5H5.5a1.5 1.5 0 0 0-1.5 1.5v12a1.5 1.5 0 0 0 1.5 1.5h9a1.5 1.5 0 0 0 1.5-1.5V7z"/><path d="M11.5 2.5V7H16M7 11h6M7 14h4"/></svg>
@@ -123,6 +124,7 @@
             <button id="send" type="submit" class="send" title="Enviar (Enter)" disabled>
               <svg viewBox="0 0 20 20"><path d="M10 15.5V4.5M5 9.5l5-5 5 5"/></svg>
             </button>
+            </div>
           </div>
         </form>
         <div id="suggestions"></div>
@@ -297,7 +299,7 @@
     <form method="dialog" class="upd">
       <div class="upd-icon" data-spark></div>
       <h2>Cambios listos</h2>
-      <p>Lo que has probado en la copia de pruebas ya está en la app. Reiníciala para usarlo: tus pestañas se volverán a abrir con su conversación.</p>
+      <p id="upd-text">Lo que has probado en la copia de pruebas ya está en la app. Reiníciala para usarlo: tus pestañas se volverán a abrir con su conversación.</p>
       <p class="upd-busy" id="upd-busy" hidden></p>
       <footer>
         <button type="button" class="btn" id="upd-later" title="Se aplicarán la próxima vez que abras la app">Más tarde</button>

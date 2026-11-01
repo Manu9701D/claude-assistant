@@ -37,6 +37,15 @@
   color-scheme: light;
 }
 
+/* Linux: los símbolos de Claude Code (⎿ ✻ ⏵ ⏺ ⧉…) no vienen en todas las distribuciones y saldrían como
+   cuadros vacíos. Respaldo propio, subconjuntos de Noto Sans Symbols, Symbols 2 y Math (fonts/OFL.txt). */
+@font-face { font-family: 'CA Simbolos'; src: url(fonts/ca-sym2.woff2) format('woff2'); }
+@font-face { font-family: 'CA Simbolos Tec'; src: url(fonts/ca-sym.woff2) format('woff2'); }
+@font-face { font-family: 'CA Simbolos Mat'; src: url(fonts/ca-math.woff2) format('woff2'); }
+:root[data-os="linux"] {
+  --mono: 'Cascadia Code', 'Cascadia Mono', 'Adwaita Mono', 'Noto Sans Mono', 'DejaVu Sans Mono', 'CA Simbolos', 'CA Simbolos Tec', 'CA Simbolos Mat', monospace;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #262624;

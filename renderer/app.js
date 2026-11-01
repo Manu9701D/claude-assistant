@@ -1005,6 +1005,7 @@ tabsEl.addEventListener('dragstart', (e) => {
   const tab = e.target.closest('.tab');
   if (!tab) return;
   dragId = tab.dataset.id;
+  dragOver = null;
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('application/x-tab', dragId);
   // La imagen que sigue al cursor es la pestaña tal cual; la de la barra se atenúa después
@@ -1036,14 +1037,31 @@ tabsEl.addEventListener('dragend', async () => {
   if (tabsDirty) renderTabs(); else syncTabOrder();
   if (!id) return;
   const alone = state.tabs.length === 1;
+  // Dónde se soltó, para Wayland (allí el proceso principal no sabe dónde está el puntero): en la barra, en el
+  // resto de la ventana o fuera. Allí dragover solo llega al mover el puntero, y al soltar dentro de la propia
+  // ventana no hay drop sino un dragleave justo antes de dragend: ese no cuenta como salir
+  const left = dragOver?.left && performance.now() - dragOver.left > 60;
+  const over = dragOver && !left ? (dragOver.strip ? 'strip' : 'window') : null;
+  dragOver = null;
   // Una pestaña nueva sin usar no tiene sesión: la otra ventana abre la suya
-  if (await api.dropTab(isPicker(id) ? null : id, { alone }) === 'moved') closeTab(id, { moved: true });
+  if (await api.dropTab(isPicker(id) ? null : id, { alone, over }) === 'moved') closeTab(id, { moved: true });
 });
+let dragOver = null;
+const inStrip = (e) => e.clientY < ($('#titlebar')?.offsetHeight || 44);
 // Arrastrando una pestaña, toda la ventana la acepta (si no, Windows enseña el cursor de prohibido)
 window.addEventListener('dragover', (e) => {
-  if (e.dataTransfer?.types.includes('application/x-tab')) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }
+  if (!e.dataTransfer?.types.includes('application/x-tab')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  if (dragId) dragOver = { strip: inStrip(e) };
 });
-window.addEventListener('drop', (e) => { if (e.dataTransfer?.types.includes('application/x-tab')) e.preventDefault(); });
+document.addEventListener('dragleave', (e) => { if (dragId && dragOver && !e.relatedTarget) dragOver.left = performance.now(); }); // salió de la ventana
+window.addEventListener('drop', (e) => {
+  if (!e.dataTransfer?.types.includes('application/x-tab')) return;
+  e.preventDefault();
+  // Pestaña de otra ventana soltada aquí: se avisa (en Wayland es lo único que dice dónde cayó)
+  if (!dragId) api.tabDroppedHere({ x: e.clientX, strip: inStrip(e) });
+});
 
 // Pestaña que llega de otra ventana: se coloca donde se soltó
 api.onTakeTab(({ conv, x }) => {
@@ -1980,7 +1998,8 @@ function modelLabel(c) {
   const v = c?.model || '';
   const m = modelEntry(c);
   if (!m) return v || 'Modelo';
-  if (m.value === 'default') return (m.description.split(' · ')[0] || 'Por defecto');
+  // «Opus 4.7 · …» o, en versiones nuevas, «Use the default model (currently Opus 5.5) · …»
+  if (m.value === 'default') return m.description.match(/\(currently ([^)]+)\)/)?.[1] || m.description.split(' · ')[0] || 'Por defecto';
   return m.displayName;
 }
 
@@ -4755,7 +4774,9 @@ async function tileWindows() {
 
 // ---------- Reinicio para aplicar cambios ----------
 const updDialog = $('#update-dialog');
-api.onUpdateReady(({ busy }) => {
+const UPD_TEXT = $('#upd-text').textContent;
+api.onUpdateReady(({ busy, text }) => {
+  $('#upd-text').textContent = text || UPD_TEXT;
   $('#upd-busy').hidden = !busy;
   $('#upd-busy').textContent = busy === 1
     ? 'Hay una pestaña trabajando: si reinicias ahora, se interrumpe.'
