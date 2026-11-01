@@ -78,7 +78,7 @@ const DEFAULTS = {
   effort: '',              // '', low, medium, high, xhigh, max
   compactWindow: 200,      // compactar la conversación al llegar a estos miles de tokens (0 = al llenar la ventana del modelo)
   cwd: os.homedir(),       // carpeta por defecto de las pestañas nuevas
-  permissionMode: 'bypassPermissions',
+  permissionMode: 'default', // bypassPermissions solo si el usuario lo elige: las pestañas leen contenido de terceros (WhatsApp, webs)
   hotkey: 'Control+Shift+Space',
   voiceHotkey: 'Control+Alt+Space', // asistente por voz (ver assist.mjs)
   voicePreset: 'assist',   // preset de la pestaña de voz ('' = en blanco)

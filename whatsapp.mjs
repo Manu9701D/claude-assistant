@@ -2,7 +2,7 @@
 // segunda pantalla sin activarse) que Claude maneja por dentro con herramientas MCP. Escribe y
 // hace clic a través de CDP, sin pasar por el ratón ni el teclado de Windows, así que no te quita el
 // foco. La sesión se guarda (partición persistente): el QR se escanea una sola vez.
-import { app, BrowserWindow, screen } from 'electron';
+import { app, BrowserWindow, dialog, screen } from 'electron';
 import { createHttpMcp } from './mcp-http.mjs';
 import { z } from 'zod';
 import fs from 'node:fs';
@@ -275,6 +275,28 @@ export function createWhatsApp({ icon, getConfig }) {
   }
   const text = (t) => ({ content: [{ type: 'text', text: t }] });
 
+  // Enviar lo confirma el usuario aquí, no el modelo: un mensaje o una web con instrucciones escondidas
+  // no puede mandar nada por su cuenta, aunque la pestaña esté en bypassPermissions. «No volver a
+  // preguntar» vale para ese chat hasta que se cierre la app.
+  const allowed = new Set();
+  const chatKey = (chat) => String(chat).trim().toLowerCase();
+  async function confirmSend(chat, detail) {
+    if (allowed.has(chatKey(chat))) return true;
+    const parent = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows().find((w) => w !== win && w.isVisible());
+    const opts = {
+      type: 'question', title: 'WhatsApp', buttons: ['Enviar', 'Cancelar'], defaultId: 1, cancelId: 1, noLink: true,
+      message: `Claude quiere enviar por WhatsApp a «${chat}»:`,
+      detail: detail.length > 1500 ? detail.slice(0, 1500) + '…' : detail,
+      checkboxLabel: 'No volver a preguntar para este chat hasta cerrar la app',
+      signal: AbortSignal.timeout(180000),
+    };
+    const r = await (parent ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts));
+    if (r.response !== 0) return false;
+    if (r.checkboxChecked) allowed.add(chatKey(chat));
+    return true;
+  }
+  const refused = (chat) => text(`El usuario no ha autorizado el envío a «${chat}». No se ha enviado nada; no lo intentes por otra vía.`);
+
   // Servidor MCP por HTTP para las pestañas (se crea la primera vez que hace falta)
   let mcp = null;
   function mcpConfig() {
@@ -298,9 +320,10 @@ export function createWhatsApp({ icon, getConfig }) {
             return text(`Chat: ${name}\n${await readMessages(limit) || '(sin mensajes visibles)'}`);
           })),
         tool('whatsapp_send', 'Envía un mensaje de texto por WhatsApp a un chat o contacto.', { chat: z.string().describe('Nombre del chat o contacto'), message: z.string() },
-          ({ chat, message }) => run(() => sendMessage(chat, message))),
+          async ({ chat, message }) => (await confirmSend(chat, message)) ? run(() => sendMessage(chat, message)) : refused(chat)),
         tool('whatsapp_send_file', 'Envía una foto, vídeo o documento por WhatsApp, con un texto opcional.', { chat: z.string(), path: z.string().describe('Ruta absoluta del archivo'), caption: z.string().optional() },
-          ({ chat, path: file, caption }) => run(async () => {
+          async ({ chat, path: file, caption }) => !(await confirmSend(chat, `Archivo: ${file}${caption ? `
+Texto: ${caption}` : ''}`)) ? refused(chat) : run(async () => {
             if (!fs.existsSync(file)) return text(`No existe el archivo ${file}.`);
             const name = await openChat(chat);
             const media = /\.(jpe?g|png|gif|webp|mp4|mov|3gp)$/i.test(file);

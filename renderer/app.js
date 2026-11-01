@@ -766,10 +766,31 @@ marked.use({
   },
 });
 
+// Las imágenes de internet no se cargan solas: una respuesta con ![](https://sitio/?datos) mandaría
+// datos fuera sin un clic (p. ej. tras leer una web o un mensaje con instrucciones escondidas). Quedan
+// como enlace, que se abre en el navegador si se pulsa. La CSP (index.html) tampoco las deja cargar.
+function externalImages(html) {
+  if (!/<img/i.test(html)) return html;
+  const t = document.createElement('template');
+  t.innerHTML = html;
+  for (const img of t.content.querySelectorAll('img')) {
+    const src = img.getAttribute('src') || '';
+    if (!/^https?:/i.test(src)) continue;
+    const a = document.createElement('a');
+    a.href = src;
+    let host = src;
+    try { host = new URL(src).host; } catch {}
+    a.textContent = `🖼 ${img.getAttribute('alt') || 'Imagen'} (${host})`;
+    a.title = src;
+    img.replaceWith(a);
+  }
+  return t.innerHTML;
+}
+
 const mdCache = new Map();
 function md(text) {
   if (mdCache.has(text)) return mdCache.get(text);
-  const html = DOMPurify.sanitize(marked.parse(text || ''));
+  const html = externalImages(DOMPurify.sanitize(marked.parse(text || '')));
   if (mdCache.size > 500) mdCache.clear();
   mdCache.set(text, html);
   return html;
