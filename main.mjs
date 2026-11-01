@@ -16,8 +16,9 @@ import { createTermChat, unwrapPasted } from './termchat.mjs';
 import { createHttpMcp } from './mcp-http.mjs';
 import { createUnixJobs } from './unix-jobs.mjs';
 import { readOutput, stopTask } from './bgtasks.mjs';
-import { createDocView } from './docview.mjs';
+import { createDocView, PREVIEW_EXT } from './docview.mjs';
 import { createSchedules, cleanSchedule, nextRun } from './schedules.mjs';
+import { watchHangs } from './hangs.mjs';
 import { z } from 'zod';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -61,6 +62,13 @@ const logError = (kind) => (err) => {
 };
 process.on('uncaughtException', logError('uncaughtException'));
 process.on('unhandledRejection', logError('unhandledRejection'));
+// Cuelgues de las interfaces o del proceso principal, con dónde estaban (cuelgues.log). Antes de registrar
+// ningún mensaje de la interfaz: los envuelve para saber cuál se atendía
+watchHangs(DATA_DIR, () => {
+  const id = winTabs.get(win)?.active;
+  const c = id && terminals.get(id);
+  return c ? `pestaña «${String(c.title || '').slice(0, 60)}», ${c.messages?.length || 0} mensajes${c.busy ? ', trabajando' : ''}, ${terminals.list().length} pestañas` : '';
+});
 
 const DEFAULTS = {
   authMode: 'claude-code', // 'claude-code' | 'api-key' | 'oauth-token'
@@ -89,6 +97,7 @@ const DEFAULTS = {
   tokenDiet: 0,            // versión ya aplicada de la migración de ahorro de tokens
   githubSeeded: false,     // cuenta de GitHub de Trabajo ya puesta
   setupDone: false,        // asistente de primer arranque ya visto (#setup en la interfaz)
+  docLinks: {},            // documentos abiertos a mano en el panel de cada conversación (id de sesión -> rutas)
   sidebar: { open: true, pinned: [], titles: {}, groups: {}, closed: [] }, // barra lateral: fijados, nombres y grupos propios (id de sesión -> preset), grupos plegados
   notify: { done: true, ask: true, scheduled: true, sound: true }, // avisos del sistema por tipo (terminado, preguntas y permisos, tareas programadas) y con sonido
   schedules: [],           // tareas programadas (ver schedules.mjs)
@@ -1196,6 +1205,15 @@ ipcMain.handle('dialog:paths', async (e, cwd) => {
   const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
     title: 'Añadir archivos a la conversación', defaultPath: cwd && fs.existsSync(cwd) ? cwd : os.homedir(),
     properties: ['openFile', 'multiSelections'],
+  });
+  return r.canceled ? [] : r.filePaths;
+});
+// Panel de documentos: abrir otros y dejarlos vinculados a la conversación
+ipcMain.handle('dialog:docs', async (e, cwd) => {
+  const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
+    title: 'Abrir en el panel de esta conversación', defaultPath: cwd && fs.existsSync(cwd) ? cwd : os.homedir(),
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Documentos', extensions: [...PREVIEW_EXT] }],
   });
   return r.canceled ? [] : r.filePaths;
 });

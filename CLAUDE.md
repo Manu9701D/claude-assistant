@@ -13,6 +13,7 @@ Se mejora **Claude Assistant**, la app Electron desde la que probablemente corre
 - En un Mac de la red (hace falta el alias `mac` en `~/.ssh/config` y la clave autorizada allí; ahora no hay ninguno conectado): `node tools/mac.cjs start|restart|stop` copia la fuente limpia a `~/claude-assistant-pruebas` y la abre allí; `node tools/cdp.cjs --mac shot|eval`. Si cambia la IP del Mac, actualiza el alias.
 4. Solo con el visto bueno del usuario, y avisándole antes de que la app pedirá reiniciarse: `node tools/apply.cjs "Qué cambia"`. Comprueba la sintaxis, hace commit en dev, pasa a main (con `npm install` si hace falta), sube main y dev a GitHub (`origin`, privado, Manu9701D) y la app ofrece reiniciar. Esta pestaña vuelve con la conversación; la de pruebas no (`dev.cjs start`).
 - Si la versión nueva no arranca en 45 s, `tools/watchdog.cjs` vuelve al commit anterior. Registro: `%APPDATA%\claude-assistant\watchdog.log` (o `claude-assistant-dev\`).
+- Cuelgues: `hangs.mjs` apunta en `cuelgues.log` (misma carpeta) cuándo se bloquea una ventana o el proceso principal, cuánto dura y la pila del JavaScript bloqueado.
 
 ## Reglas
 1. Nunca cierres ni mates la app en uso (nada de `Stop-Process`/`taskkill` sobre `Claude Assistant.exe`). La de pruebas, solo con `dev.cjs stop`.

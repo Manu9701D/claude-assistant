@@ -266,7 +266,7 @@ darkMq.addEventListener('change', () => { if ([...diagrams.keys()].some((k) => k
 // ---------- Panel de artefactos (como claude.ai): HTML, SVG, diagramas y documentos a un lado del chat ----------
 // El HTML va en un <webview> aislado (main.mjs lo fuerza: sandbox, sin preload, sesión propia, solo data:)
 const artEl = $('#artifact');
-const ART = { html: ['Página', 'html', 'html'], svg: ['SVG', 'svg', 'xml'], mermaid: ['Diagrama', 'mmd', 'mermaid'], markdown: ['Documento', 'md', 'markdown'], url: ['Página local'] };
+const ART = { html: ['Página', 'html', 'html'], svg: ['SVG', 'svg', 'xml'], mermaid: ['Diagrama', 'mmd', 'mermaid'], markdown: ['Documento', 'md', 'markdown'], conv: ['Conversación', 'md', 'markdown'], url: ['Página local'] };
 // Los enlaces del chat a un servidor de este equipo (vista previa en vivo, servidor de desarrollo) se abren en el panel
 const LOCAL_URL = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i;
 let artifact = null; // { convId, kind, text, key, title, tab }
@@ -291,8 +291,12 @@ function openArtifactUrl(url, convId = state.activeId) {
 // Cada pestaña tiene su panel: al cambiar de pestaña se oculta tal cual (su <webview> sigue vivo: no se
 // recarga ni se pierde lo que se esté editando) y vuelve al volver a ella
 const artSaved = new Map(); // convId -> artifact oculto
+const artHidden = new Set(); // pestañas cuyo panel se ha ocultado con su botón (sigue en artSaved, tal cual)
 function showArtifact(a) {
   artifact?.body?.remove(); // el anterior de esta pestaña, con su <webview> y su proceso
+  artSaved.get(a.convId)?.body?.remove(); // o el que estaba oculto
+  artSaved.delete(a.convId);
+  artHidden.delete(a.convId);
   artifact = a;
   artEl.hidden = false;
   renderArtifact();
@@ -316,12 +320,13 @@ function unstashArtifact(convId) {
   artifact.body.hidden = false;
   renderArtifactHead();
   if (artifact.kind === 'file') reloadFileArtifact(); // pudo cambiar mientras no se veía
+  else if (artifact.kind === 'conv') renderArtifact();
 }
 // Al cambiar de pestaña: el panel de esta, o lo nuevo que tenga que enseñar
 function syncArtifact(c) {
   if (artifact && artifact.convId !== c?.id) stashArtifact();
   if (!c) return;
-  if (!artifact && artSaved.has(c.id)) unstashArtifact(c.id);
+  if (!artifact && artSaved.has(c.id) && !artHidden.has(c.id)) unstashArtifact(c.id);
   if (artPending.has(c.id)) { openArtifactUrl(artPending.get(c.id), c.id); artPending.delete(c.id); }
   else if (filePending.has(c.id)) { openFileArtifact(filePending.get(c.id), c.id); filePending.delete(c.id); }
 }
@@ -329,6 +334,7 @@ function syncArtifact(c) {
 function dropArtifact(convId) {
   artSaved.get(convId)?.body?.remove();
   artSaved.delete(convId);
+  artHidden.delete(convId);
   if (artifact?.convId !== convId) return;
   artifact.body?.remove();
   artifact = null;
@@ -382,7 +388,7 @@ function autoPreview(c) {
   const top = c.files?.[0];
   if (!top?.live || filesSeen.get(c.id) === top.at) return;
   filesSeen.set(c.id, top.at);
-  if (state.config?.autoPreview === false || !AUTO_DOC.test(top.path) || fileDismissed.get(c.id)?.has(top.path)) return;
+  if (state.config?.autoPreview === false || artHidden.has(c.id) || !AUTO_DOC.test(top.path) || fileDismissed.get(c.id)?.has(top.path)) return;
   if (artifact?.kind === 'file' && artifact.path === top.path && artifact.convId === c.id) return; // ya se ve: lo recarga su vigilancia
   if (c.id === state.activeId) openFileArtifact(top.path, c.id, true);
   else filePending.set(c.id, top.path);
@@ -417,23 +423,95 @@ async function reloadFileArtifact() {
   wv.reloadIgnoringCache();
 }
 api.onPreviewChanged((file) => { if (artifact?.kind === 'file' && artifact.path === file) reloadFileArtifact(); });
+// Documentos abiertos a mano en el panel: quedan vinculados a la conversación (config.docLinks, por id de
+// sesión; antes de la primera respuesta aún no la hay y van con el de la pestaña)
+const sameFile = (a, b) => (IS_WIN ? String(a).toLowerCase() === String(b).toLowerCase() : a === b);
+const docLinks = (c) => (c && (state.config?.docLinks?.[c.sessionId] || state.config?.docLinks?.[c.id])) || [];
+async function setDocLinks(c, paths) {
+  const all = { ...(state.config.docLinks || {}) };
+  delete all[c.id];
+  if (paths.length) all[c.sessionId || c.id] = paths.slice(0, 50);
+  else delete all[c.sessionId || c.id];
+  const keys = Object.keys(all);
+  for (const k of keys.slice(0, Math.max(0, keys.length - 300))) delete all[k]; // las más antiguas
+  state.config.docLinks = all;
+  await api.setConfig({ docLinks: all });
+}
+// Los que Claude ha tocado en la sesión (los más recientes primero) y, detrás, los vinculados
+function sessionDocs(c) {
+  const links = docLinks(c);
+  const out = (c?.files || []).map((f) => ({ path: f.path, at: f.at, linked: links.some((p) => sameFile(p, f.path)) }));
+  for (const p of links) if (!out.some((f) => sameFile(f.path, p))) out.push({ path: p, linked: true });
+  return out;
+}
+async function linkDocs(c) {
+  const picked = await api.pickDocs(c.cwd).catch(() => []);
+  if (!picked.length || !state.convs.has(c.id)) return;
+  await setDocLinks(c, [...picked, ...docLinks(c).filter((p) => !picked.some((q) => sameFile(p, q)))]);
+  if (c.id === state.activeId) openFileArtifact(picked[0], c.id);
+  renderDocsButton();
+}
+async function unlinkDoc(c, file) {
+  await setDocLinks(c, docLinks(c).filter((p) => !sameFile(p, file)));
+  if (!artFiles.hidden) toggleFileList(true);
+  renderDocsButton();
+}
+// La conversación misma, como documento (lo que exporta /export), al día mientras Claude escribe
+function openConvArtifact(convId = state.activeId) {
+  const c = state.convs.get(convId);
+  showArtifact({ convId, kind: 'conv', text: '', title: c?.title || ART.conv[0], tab: 'view' });
+}
+let convArtTimer = null;
+function refreshConvArtifact(convId) {
+  if (artifact?.kind !== 'conv' || artifact.convId !== convId || convArtTimer) return;
+  convArtTimer = setTimeout(() => { convArtTimer = null; if (artifact?.kind === 'conv' && artifact.convId === convId) renderArtifact(); }, 700);
+}
+// Botón de la barra de título (Ctrl+Shift+F): ocultar deja el panel tal cual (documento, borrador, desplazamiento)
+async function togglePanel() {
+  const c = current();
+  if (!c || c.picker) return;
+  if (artifact) {
+    artHidden.add(c.id);
+    stashArtifact();
+    renderDocsButton();
+    return;
+  }
+  artHidden.delete(c.id);
+  if (artSaved.has(c.id)) { unstashArtifact(c.id); renderDocsButton(); return; }
+  const f = sessionDocs(c)[0];
+  if (f) await openFileArtifact(f.path, c.id); else openConvArtifact(c.id);
+  if (artifact?.convId === c.id) toggleFileList(true);
+}
 // Lista de los documentos de la conversación (al pulsar el título del panel)
 const artFiles = artEl.querySelector('.artifact-files');
 const filesConv = () => current();
 function toggleFileList(show = artFiles.hidden) {
   const c = filesConv();
-  const files = c?.files || [];
-  if (!show || !files.length) { artFiles.hidden = true; return; }
-  artFiles.innerHTML = files.map((f) => `<button type="button" class="art-file${artifact.path === f.path ? ' on' : ''}" data-path="${esc(f.path)}" title="${esc(f.path)}">`
-    + `<span class="art-file-name">${esc(baseName(f.path))}</span><span class="art-file-dir">${esc(shortPath(f.path.slice(0, -baseName(f.path).length - 1)))}</span>`
-    + `<span class="art-file-at">${esc(agoText(f.at))}</span></button>`).join('');
+  if (!show || !c || !artifact) { artFiles.hidden = true; return; }
+  const docs = sessionDocs(c);
+  const n = c.messages?.length || 0;
+  artFiles.innerHTML = `<button type="button" class="art-file art-conv${artifact.kind === 'conv' ? ' on' : ''}" data-conv>`
+    + `<span class="art-file-name">${I.chat}Conversación</span><span class="art-file-dir">${esc(c.title || 'Esta pestaña')}</span>`
+    + `<span class="art-file-at">${n} ${n === 1 ? 'mensaje' : 'mensajes'}</span></button>`
+    + (docs.length ? '<div class="art-sep"></div>' : '')
+    + docs.map((f) => `<div class="art-row${f.linked ? ' linked' : ''}"><button type="button" class="art-file${artifact.kind === 'file' && sameFile(artifact.path, f.path) ? ' on' : ''}" data-path="${esc(f.path)}" title="${esc(f.path)}">`
+      + `<span class="art-file-name">${esc(baseName(f.path))}</span><span class="art-file-dir">${esc(shortPath(f.path.slice(0, -baseName(f.path).length - 1)))}</span>`
+      + `<span class="art-file-at">${f.at ? esc(agoText(f.at)) : 'Vinculado'}</span></button>`
+      + (f.linked ? `<button type="button" class="icon-btn xs art-unlink" data-unlink="${esc(f.path)}" title="Quitar de esta conversación (el archivo no se borra)">${I.x}</button>` : '')
+      + '</div>').join('')
+    + `<div class="art-sep"></div><button type="button" class="art-file art-open" data-open><span class="art-file-name">${I.plus}Abrir otro archivo…</span>`
+    + '<span class="art-file-dir">Word, Excel, PDF, Markdown, HTML, imágenes… Queda vinculado a esta conversación</span></button>';
   artFiles.hidden = false;
 }
-artFiles.addEventListener('click', (e) => {
-  const b = e.target.closest('[data-path]');
-  if (!b) return;
+artFiles.addEventListener('click', async (e) => {
+  const c = filesConv();
+  const b = e.target.closest('[data-path], [data-conv], [data-open], [data-unlink]');
+  if (!b || !c) return;
+  if (b.dataset.unlink) { unlinkDoc(c, b.dataset.unlink); return; }
   artFiles.hidden = true;
-  openFileArtifact(b.dataset.path, filesConv()?.id);
+  if (b.dataset.path) openFileArtifact(b.dataset.path, c.id);
+  else if ('open' in b.dataset) linkDocs(c);
+  else if (artifact?.kind !== 'conv' && await confirmDiscard()) openConvArtifact(c.id);
 });
 document.addEventListener('pointerdown', (e) => { if (!artFiles.hidden && !e.target.closest('.artifact-files, .artifact-title')) artFiles.hidden = true; });
 function closeArtifact() {
@@ -451,18 +529,23 @@ function closeArtifact() {
 }
 // Botón del compositor para volver a abrir los documentos con el panel cerrado
 function renderDocsButton() {
+  const c = current();
+  const docs = sessionDocs(c);
+  const n = docs.length;
   const btn = $('#art-docs');
-  const n = current()?.files?.length || 0;
   btn.hidden = !n || !artEl.hidden;
-  btn.title = n === 1 ? `Ver ${baseName(current().files[0].path)}` : `Ver los documentos de esta conversación (${n})`;
+  btn.title = n === 1 ? `Ver ${baseName(docs[0].path)}` : `Ver los documentos de esta conversación (${n})`;
+  const tog = $('#panel-toggle');
+  tog.classList.toggle('on', !artEl.hidden);
+  tog.disabled = !c || !!c.picker;
 }
 function renderArtifactHead() {
   const { kind, tab } = artifact;
   const file = kind === 'file';
   const title = artEl.querySelector('.artifact-title');
   title.textContent = artifact.title;
-  title.title = file ? `${artifact.path}\nPulsa para ver los demás documentos de la conversación` : '';
-  title.classList.toggle('pick', !!filesConv()?.files?.length);
+  title.title = `${file ? `${artifact.path}\n` : ''}Pulsa para ver los documentos de la conversación o abrir otro`;
+  title.classList.add('pick');
   artEl.querySelectorAll('.artifact-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.art === tab));
   artEl.querySelector('[data-art="window"]').hidden = kind !== 'html' && kind !== 'url' && !file;
   artEl.querySelector('[data-art="window"]').title = kind === 'url' ? 'Abrir en el navegador' : file ? 'Abrir con su aplicación' : 'Abrir en una ventana';
@@ -484,6 +567,7 @@ function renderArtifact() {
   const body = artifact.body;
   body.className = `artifact-body ${tab === 'code' ? 'is-code' : `is-${kind === 'url' || file ? 'html' : kind}`}`;
   if (tab === 'code' && file) { renderTextEditor(body); return; }
+  if (kind === 'conv') { renderConvBody(body); return; }
   if (tab === 'code') { body.innerHTML = `<pre><code class="hljs">${highlight(text, ART[kind][2])}</code></pre>`; return; }
   if (file) {
     // Documento local: lo sirve docview.mjs (convertido si es Word, Excel o PowerPoint)
@@ -524,6 +608,22 @@ function renderArtifact() {
     body.innerHTML = d?.img ? `<img src="${d.img}" alt="${esc(artifact.title)}">`
       : d?.error ? `<div class="preview-error">No se ha podido dibujar: ${esc(d.error)}</div>` : '<div class="preview-view loading">Dibujando…</div>';
   }
+}
+// La conversación en el panel: si se estaba al final, sigue al final mientras Claude escribe
+function renderConvBody(body) {
+  const c = state.convs.get(artifact.convId);
+  if (!c) return;
+  const first = !body.childElementCount;
+  const atEnd = first || body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+  const top = body.scrollTop;
+  artifact.text = conversationMarkdown(c);
+  artifact.title = c.title || ART.conv[0];
+  artEl.querySelector('.artifact-title').textContent = artifact.title;
+  const code = artifact.tab === 'code';
+  body.className = `artifact-body ${code ? 'is-code' : 'is-markdown'}`;
+  body.innerHTML = code ? `<pre><code class="hljs">${highlight(artifact.text, 'markdown')}</code></pre>`
+    : c.messages.length ? `<div class="md">${c.messages.map((m) => md(messageMarkdown(m))).join('')}</div>` : '<div class="preview-view loading">Aún no hay mensajes</div>';
+  body.scrollTop = atEnd ? body.scrollHeight : top;
 }
 // Código de un documento de texto, editable: se guarda con Ctrl+S o el botón (el borrador sigue al cambiar a Vista)
 function renderTextEditor(body) {
@@ -598,7 +698,8 @@ artEl.querySelector('.artifact-head').addEventListener('click', async (e) => {
     if (p) toast(`Guardado en ${shortPath(p)}`);
   }
 });
-$('#art-docs').addEventListener('click', () => { const f = current()?.files?.[0]; if (f) { openFileArtifact(f.path, current().id); if ((current().files.length || 0) > 1) toggleFileList(true); } });
+$('#art-docs').addEventListener('click', () => togglePanel());
+$('#panel-toggle').addEventListener('click', () => togglePanel());
 // Ancho: arrastrando el borde izquierdo (el <webview> se tragaría el ratón: se desactiva mientras)
 artEl.querySelector('.artifact-resize').addEventListener('pointerdown', (e) => {
   e.preventDefault();
@@ -1325,7 +1426,7 @@ function renderThread() {
   if (thread.querySelector('.preview-view.loading')) queueDiagrams(); // el HTML pudo salir de mdCache
   syncArtifact(c);
   if (artifact?.kind === 'mermaid' && !artifact.img) renderArtifact(); // quizá ya está dibujado
-  if (artifact) { artFiles.hidden = true; artEl.querySelector('.artifact-title').classList.toggle('pick', !!filesConv()?.files?.length); }
+  if (artifact) artFiles.hidden = true;
   updateWorking();
 }
 
@@ -2457,27 +2558,26 @@ async function openSettingsView(c, what) {
 
 // /export como en Claude Code: la conversación en Markdown, a un archivo o al portapapeles
 function conversationMarkdown(c) {
+  const out = [`# ${c.title || 'Conversación'}`, '', `_${new Date().toLocaleString('es-ES')} · ${c.cwd || ''}_`];
+  for (const m of c.messages) { const t = messageMarkdown(m); if (t) out.push('', t); }
+  return out.join('\n') + '\n';
+}
+// Cada mensaje por separado: el panel de la conversación los pasa a HTML uno a uno (md() guarda los que no cambian)
+function messageMarkdown(m) {
   const toolLine = (b) => {
     const meta = TOOL_META[b.name];
     const what = b.input?.description || b.input?.command || (b.input?.file_path && shortPath(b.input.file_path)) || b.input?.pattern || b.input?.url || b.input?.query || '';
     return `> ${meta ? meta[1] : b.name}${what ? `: ${String(what).split('\n')[0]}` : ''}`;
   };
-  const out = [`# ${c.title || 'Conversación'}`, '', `_${new Date().toLocaleString('es-ES')} · ${c.cwd || ''}_`];
-  for (const m of c.messages) {
-    if (m.role === 'user') {
-      out.push('', '## Tú', '', m.text || '', ...(m.images?.length ? ['', `_(${m.images.length} imagen${m.images.length > 1 ? 'es' : ''})_`] : []));
-      continue;
-    }
-    const parts = [];
-    for (const b of m.blocks || []) {
-      if (b.type === 'text' && b.text?.trim()) parts.push(b.text.trim());
-      else if (b.type === 'tool') parts.push(toolLine(b));
-      else if (b.type === 'note' || b.type === 'interrupted') parts.push(`_${b.text}_`);
-      else if (b.type === 'error') parts.push(`> **Error:** ${b.text}`);
-    }
-    if (parts.length) out.push('', '## Claude', '', parts.join('\n\n'));
+  if (m.role === 'user') return ['## Tú', '', m.text || '', ...(m.images?.length ? ['', `_(${m.images.length} imagen${m.images.length > 1 ? 'es' : ''})_`] : [])].join('\n');
+  const parts = [];
+  for (const b of m.blocks || []) {
+    if (b.type === 'text' && b.text?.trim()) parts.push(b.text.trim());
+    else if (b.type === 'tool') parts.push(toolLine(b));
+    else if (b.type === 'note' || b.type === 'interrupted') parts.push(`_${b.text}_`);
+    else if (b.type === 'error') parts.push(`> **Error:** ${b.text}`);
   }
-  return out.join('\n') + '\n';
+  return parts.length ? ['## Claude', '', parts.join('\n\n')].join('\n') : '';
 }
 function exportConversation(c, file, toFile = false) {
   if (!c?.messages?.length) return toast('No hay nada que exportar todavía');
@@ -2607,6 +2707,7 @@ api.onConv(async ({ convId, conv, from }) => {
   if (titleChanged) renderTabs();
   if (prev?.title !== conv.title) refreshSide(3000); // una conversación nueva o con título nuevo
   if (conv.files?.length) autoPreview(conv);
+  refreshConvArtifact(convId);
   if (convId !== state.activeId) return;
   if (prev?.files?.[0]?.at !== conv.files?.[0]?.at) renderDocsButton();
   const wasEmpty = $('#main').classList.contains('is-empty');
@@ -2753,6 +2854,7 @@ function showHelp() {
       [K('Ctrl+H'), 'Conversaciones anteriores (también /resume)'],
       [K('Ctrl+Shift+D'), 'Dividir en dos: la misma ventana con la misma cuenta, otra ventana al lado con otra cuenta'],
       [K('Ctrl+Shift+E'), 'Mostrar u ocultar la barra lateral (conversaciones fijadas y recientes)'],
+      [K('Ctrl+Shift+F'), 'Mostrar u ocultar el panel de documentos de la conversación (y la conversación misma)'],
       [K('Ctrl+O'), 'Cambiar la vista de la conversación: normal, con el razonamiento o detallada'],
     ]],
     ['Modo terminal', [
@@ -4138,6 +4240,7 @@ document.addEventListener('keydown', (e) => {
   const termOwns = inTerm && !IS_MAC;
   if (k === 'd' && e.shiftKey && !e.altKey) { e.preventDefault(); splitWindow($('#tb-menu')); return; }
   if (k === 'e' && e.shiftKey && !e.altKey) { e.preventDefault(); toggleSidebar(); return; }
+  if (k === 'f' && e.shiftKey && !e.altKey && !document.querySelector('dialog[open]')) { e.preventDefault(); togglePanel(); return; }
   if (k === 'o' && !e.shiftKey && !e.altKey && !inTerm) { e.preventDefault(); cycleView(); return; }
   // En la vista de terminal, Ctrl+F y Ctrl+H (retroceso) son de Claude Code
   if (k === 'f' && !e.shiftKey && !e.altKey && !termOwns && !document.querySelector('dialog[open]')) { e.preventDefault(); openFind(); return; }

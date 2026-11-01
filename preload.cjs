@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
   setTabExt: (id, kind, name, on) => ipcRenderer.invoke('tab:ext', id, kind, name, on),
   tabExtOff: (id) => ipcRenderer.invoke('tab:ext-off', id),
   pickPaths: (cwd) => ipcRenderer.invoke('dialog:paths', cwd),
+  pickDocs: (cwd) => ipcRenderer.invoke('dialog:docs', cwd),
   exportChat: (o) => ipcRenderer.invoke('dialog:export', o),
   takeShot: () => ipcRenderer.invoke('shot:take'),
   addMcp: (name, json) => ipcRenderer.invoke('ext:mcp-add', name, json),

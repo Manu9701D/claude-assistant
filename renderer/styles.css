@@ -927,6 +927,16 @@ button.artifact-title.pick::after { content: ''; display: inline-block; width: 6
 .art-file-name { grid-area: name; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .art-file-dir { grid-area: dir; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .art-file-at { grid-area: at; align-self: center; font-size: 11.5px; color: var(--muted); }
+.art-file-name svg { width: 14px; height: 14px; margin: 0 6px -2px 0; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.art-open .art-file-name { color: var(--muted); }
+.art-open:hover .art-file-name { color: var(--text); }
+.art-sep { height: 1px; margin: 4px 8px; background: var(--border); }
+.art-row { position: relative; }
+.art-unlink { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); visibility: hidden; }
+.art-row:hover .art-unlink { visibility: visible; }
+.art-row.linked:hover .art-file-at { visibility: hidden; }
+#panel-toggle.on { color: var(--text); }
+#panel-toggle:disabled { opacity: .35; pointer-events: none; }
 /* Ampliado: el panel ocupa el sitio del chat */
 #shell:has(#artifact.wide:not([hidden])) > main { display: none; }
 #artifact.wide { flex: 1; left: 0; width: auto !important; max-width: none; }
