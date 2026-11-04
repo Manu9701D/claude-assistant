@@ -526,8 +526,9 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     tool.isError = !!b.is_error;
     if (!tool.isError) applyTask(t.conv, tool, structured);
     // Comandos y agentes en segundo plano: siguen hasta su <task-notification>. Los de antes de
-    // arrancar este Claude Code ya no corren (al salir los cierra)
-    const bg = !tool.isError && /running in background with ID: (\S+?)\.?(\s|$)|agentId: (\w+)/.exec(tool.result);
+    // arrancar este Claude Code ya no corren (al salir los cierra). Solo lo lanzado aparte: los agentes
+    // normales, que son parte de la respuesta, también devuelven su agentId
+    const bg = !tool.isError && /running in background with ID: (\S+?)\.?(\s|$)|Async agent launched[\s\S]*?agentId: (\w+)/.exec(tool.result);
     if (bg && Date.parse(timestamp || 0) >= t.startedAt - 5000) {
       const id = bg[1] || bg[3];
       const label = tool.input?.description || tool.input?.command || tool.name;

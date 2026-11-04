@@ -1847,11 +1847,9 @@ function renderTasks() {
   const tasks = c?.tasks || [];
   const pending = tasks.some((t) => t.status !== 'completed');
   const el = $('#tasks');
-  // Lo que sigue en segundo plano (como «· 1 shell» al pie de Claude Code)
-  const bg = c?.background || [];
-  const bgHtml = bg.length ? `<button type="button" class="bg-running" data-open-bg title="${esc(bg.map((x) => x.label).join('\n'))}&#10;&#10;Ver la salida o detener (/tasks)"><span class="todo-spin"></span><span class="q-label-sm">En segundo plano</span><span class="q-text-sm">${esc(bg.map((x) => x.label).join(' · '))}</span>${bg.length > 1 ? `<span class="todo-count">${bg.length}</span>` : ''}${I.chevron}</button>` : '';
+  renderBgButton(c);
   if ($('#bg-dialog').open) renderBackground();
-  if (!tasks.length || (!pending && !c.busy)) { el.innerHTML = bgHtml; return; }
+  if (!tasks.length || (!pending && !c.busy)) { el.innerHTML = ''; return; }
   const done = tasks.filter((t) => t.status === 'completed').length;
   const collapsed = collapsedTasks.has(c.id);
   const current_ = tasks.find((t) => t.status === 'in_progress');
@@ -1861,10 +1859,9 @@ function renderTasks() {
       const icon = t.status === 'completed' ? I.check : t.status === 'in_progress' ? '<span class="todo-spin"></span>' : I.circle;
       const text = t.status === 'in_progress' ? (t.activeForm || t.subject) : t.subject;
       return `<li class="${t.status}">${icon}<span>${esc(text)}</span></li>`;
-    }).join('')}</ul>`}</div>${bgHtml}`;
+    }).join('')}</ul>`}</div>`;
 }
 $('#tasks').addEventListener('click', (e) => {
-  if (e.target.closest('[data-open-bg]')) { openBackground(current()); return; }
   if (!e.target.closest('[data-toggle-tasks]')) return;
   const id = state.activeId;
   if (collapsedTasks.has(id)) collapsedTasks.delete(id); else collapsedTasks.add(id);
@@ -1989,6 +1986,97 @@ $('#bg-dialog').addEventListener('keydown', (e) => {
 });
 $('#bg-dialog').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 $('#bg-dialog').addEventListener('close', () => { clearInterval(bgDlg.timer); bgDlg.timer = null; bgDlg.view = null; focusInput(); });
+
+// Botón pequeño en la barra del cuadro de texto: cuántos procesos siguen en segundo plano y, al pulsarlo,
+// un menú para ver su salida, abrir en el panel la página que sirven (localhost) o detenerlos.
+// Sin animación: que no parezca que Claude sigue pensando.
+const BG_URL = /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\])(?::\d+)?(?:\/[^\s'"<>`)\]]*)?/gi;
+const bgUrls = new Map(); // `${convId} ${taskId}` -> última página local que ha anunciado
+const bgKind = (x) => x.agent ? 'Agente' : x.tool === 'PowerShell' ? 'PowerShell' : 'Shell';
+const bgMenuOpen = () => { const p = $('#popover'); return !p.hidden && !!p.querySelector('[data-bgm-menu]'); };
+function renderBgButton(c) {
+  const bg = c?.background || [];
+  const btn = $('#bg-btn');
+  btn.hidden = !bg.length;
+  btn.querySelector('.bg-count').textContent = bg.length > 1 ? bg.length : '';
+  btn.title = bg.length ? `Procesos de la sesión: ${bg.map((x) => x.label).join(' · ')}\nSiguen aparte: no hace falta esperar a que acaben. Clic para verlos, abrirlos o detenerlos` : '';
+  if (bgMenuOpen()) { if (bg.length) openBgMenu(true); else closePopover(); }
+}
+async function scanBgUrls(c) {
+  let found = false;
+  await Promise.all((c.background || []).filter((x) => !x.agent && x.output).map(async (x) => {
+    const o = await api.bgOutput(c.id, x.id).catch(() => null);
+    const m = o?.text?.match(BG_URL);
+    if (!m) return;
+    const url = m[m.length - 1].replace(/[.,;:]+$/, '').replace('0.0.0.0', 'localhost').replace(/\[::1?\]/, 'localhost');
+    const key = `${c.id} ${x.id}`;
+    if (bgUrls.get(key) !== url) { bgUrls.set(key, url); found = true; }
+  }));
+  if (found && bgMenuOpen() && current()?.id === c.id) openBgMenu(true);
+}
+function openBgMenu(refresh = false) {
+  const c = current();
+  const bg = c?.background || [];
+  const btn = $('#bg-btn');
+  if (!c || !bg.length) return;
+  if (!refresh && bgMenuOpen()) return closePopover();
+  const focused = refresh ? document.activeElement?.closest?.('.bgm-row')?.dataset.i : null;
+  if (refresh) closePopover();
+  const items = bg.map((x, i) => {
+    const url = bgUrls.get(`${c.id} ${x.id}`);
+    const meta = `${bgKind(x)} · ${x.stopping ? 'deteniendo' : elapsedText(x.startedAt)}${url ? ` · ${new URL(url).host}` : ''}`;
+    return { task: x, url, html: `<button class="pop-item bgm-row" data-i="${i}" title="${esc(x.command || x.label)}">
+      <span class="bgm-ico">${x.agent ? I.agent : I.terminal}</span>
+      <span class="bgm-txt"><span class="t">${esc(x.label)}</span><span class="d">${esc(meta)}</span></span>
+      <span class="bgm-acts">${url ? `<span role="button" class="icon-btn xs" data-bgm="open" title="Abrir ${esc(url)} en el panel (O)">${I.globe}</span>` : ''}${x.agent ? '' : `<span role="button" class="icon-btn xs${x.stopping ? ' off' : ''}" data-bgm="stop" title="Detener (K)">${I.stop}</span>`}</span>
+    </button>` };
+  });
+  items.push({ sep: true }, { all: true, title: 'Ver todo con su salida', desc: '/tasks' });
+  openPopover(btn, 'Procesos de la sesión', items, (it) => openBackground(c), 'above');
+  const head = pop.querySelector('.pop-title');
+  head.dataset.bgmMenu = '';
+  head.insertAdjacentHTML('afterend', '<div class="bgm-note">Siguen en marcha aparte, mientras hablas: no hace falta esperar a que acaben.</div>');
+  // Más ancho y con la nota: se recoloca sobre el botón
+  const r = btn.getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(r.left, document.body.clientWidth - pop.offsetWidth - 8)) + 'px';
+  pop.style.top = Math.max(8, r.top - pop.offsetHeight - 6) + 'px';
+  const row = (el) => items[el?.closest('.bgm-row')?.dataset.i];
+  const act = (it, what) => {
+    if (!it?.task) return;
+    if (what === 'open' && it.url) { closePopover(); openArtifactUrl(it.url, c.id); }
+    else if (what === 'stop' && !it.task.agent && !it.task.stopping) stopBgFromMenu(c, it.task);
+  };
+  const pick = pop.onclick;
+  pop.onclick = (e) => {
+    const b = e.target.closest('[data-bgm]');
+    if (b) { e.stopPropagation(); act(row(b), b.dataset.bgm); return; }
+    const r = row(e.target);
+    if (r) { closePopover(); openBackground(c); viewBackground(r.task.id); return; }
+    pick(e);
+  };
+  const keys = pop.onkeydown;
+  pop.onkeydown = (e) => {
+    const k = e.key.toLowerCase();
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && (k === 'k' || k === 'x' || k === 'o')) {
+      const r = row(document.activeElement);
+      if (r) { e.preventDefault(); act(r, k === 'o' ? 'open' : 'stop'); }
+      return;
+    }
+    keys(e);
+  };
+  if (focused != null) pop.querySelector(`.bgm-row[data-i="${focused}"]`)?.focus({ preventScroll: true });
+  if (!refresh) scanBgUrls(c);
+}
+async function stopBgFromMenu(c, task) {
+  task.stopping = true;
+  openBgMenu(true);
+  if (!await api.bgStop(c.id, task.id)) {
+    task.stopping = false;
+    if (bgMenuOpen()) openBgMenu(true);
+    toast('No he encontrado su proceso: puede que ya haya terminado');
+  }
+}
+$('#bg-btn').addEventListener('click', () => openBgMenu());
 
 // ---------- Cola de mensajes ----------
 function renderQueue() {

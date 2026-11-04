@@ -269,6 +269,15 @@ test('comandos en segundo plano: se siguen hasta su aviso, que sale en el chat',
     { ...user([{ type: 'tool_result', tool_use_id: 'tb3', content: 'Command running in background with ID: bx3.' }]), timestamp: '2020-01-01T00:00:00Z' },
   ]).conv;
   assert.deepEqual(old.background, []);
+  // Los agentes normales son parte de la respuesta: solo cuentan los lanzados aparte
+  const agents = tab([
+    user('Revísalo'),
+    { ...assistant([{ type: 'tool_use', id: 'ta1', name: 'Agent', input: { description: 'Normal', prompt: 'x' } }]), timestamp: now },
+    { ...user([{ type: 'tool_result', tool_use_id: 'ta1', content: 'Hecho.\nagentId: a111 (for resuming)' }]), timestamp: now },
+    { ...assistant([{ type: 'tool_use', id: 'ta2', name: 'Agent', input: { description: 'Aparte', prompt: 'y', run_in_background: true } }]), timestamp: now },
+    { ...user([{ type: 'tool_result', tool_use_id: 'ta2', content: 'Async agent launched successfully. (metadata)\nagentId: a222 (internal ID)' }]), timestamp: now },
+  ]).conv;
+  assert.deepEqual(agents.background.map((x) => [x.id, x.agent]), [['a222', true]]);
 });
 
 test('lo pegado se enseña sin las marcas <pasted_content> de Claude Code', () => {

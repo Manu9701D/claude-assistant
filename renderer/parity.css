@@ -175,13 +175,21 @@
 /* Panel de tareas sobre el cuadro de texto */
 #tasks { max-width: 712px; margin: 0 auto; }
 #tasks:not(:empty) { margin-bottom: 8px; }
-.bg-running { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 11px; background: var(--surface); border: 1px solid var(--border); font-size: 13px; color: var(--text-2); animation: rise .2s; }
-.bg-running .todo-spin { margin: 0; }
-.bg-running .q-text-sm { flex: 1; min-width: 0; }
-.tasks-panel + .bg-running { margin-top: 6px; }
-button.bg-running { width: 100%; text-align: left; cursor: pointer; transition: border-color .15s, background .15s; }
-button.bg-running:hover { border-color: var(--border-strong); background: var(--raised); }
-.bg-running .chev { width: 14px; height: 14px; flex: none; }
+/* Botón de lo que sigue en segundo plano (barra del cuadro de texto) y su menú */
+#bg-btn { position: relative; color: var(--text-2); }
+#bg-btn .bg-count { position: absolute; top: 1px; right: 0; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: var(--accent); color: #fff; font-size: 9.5px; font-weight: 600; line-height: 13px; text-align: center; }
+#bg-btn .bg-count:empty { width: 7px; min-width: 0; height: 7px; padding: 0; top: 4px; right: 4px; }
+#bg-btn .bg-count { background: var(--raised); color: var(--text-2); border: 1px solid var(--border-strong); line-height: 11px; }
+.bgm-note { font-size: 12px; color: var(--muted); padding: 0 10px 6px; line-height: 1.4; }
+.pop-item.bgm-row { display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 10px; }
+.bgm-ico { flex: none; display: flex; color: var(--muted); }
+.pop-item.bgm-row .bgm-ico svg { width: 15px; height: 15px; color: var(--muted); stroke-width: 1.7; }
+.bgm-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.bgm-txt .t, .bgm-txt .d { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bgm-acts { flex: none; display: flex; gap: 2px; }
+.pop-item.bgm-row .bgm-acts svg { width: 14px; height: 14px; color: var(--text-2); stroke-width: 1.7; }
+.bgm-acts .icon-btn:hover svg { color: var(--text); }
+.bgm-acts .icon-btn.off { opacity: .4; pointer-events: none; }
 
 /* /tasks: tareas en segundo plano */
 #bg-dialog { width: min(760px, 94vw); padding: 0; }
@@ -369,3 +377,4 @@ button.bg-running:hover { border-color: var(--border-strong); background: var(--
 }
 .acc-swatch:hover { transform: scale(1.15); }
 .acc-swatch.on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--c); }
+.popover:has([data-bgm-menu]) { width: 370px; max-width: calc(100vw - 16px); }
