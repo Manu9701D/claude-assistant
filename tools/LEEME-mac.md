@@ -193,9 +193,15 @@ ella a mano: *Volver a la versión original* en el icono de la barra de menús (
 
 ## Actualizar
 
-Descarga el `.dmg` nuevo y arrastra la app a Aplicaciones (*Reemplazar*). Con la carpeta del código,
-`bash instalar.sh` en la versión nueva, que cierra la anterior y la sustituye. Tu configuración, presets y
-conversaciones se conservan. Claude Code se actualiza solo.
+Lo más fácil: guarda la carpeta nueva (por ejemplo, en Descargas), abre una pestaña en Claude Assistant y
+pídele **«Actualiza Claude Assistant siguiendo ACTUALIZAR-CON-CLAUDE.md de la carpeta …»**. Claude prepara la
+versión nueva con `actualizar.sh`; tú cierras la app con ⌘Q y se abre sola actualizada.
+
+A mano: con la app cerrada, abre el `.dmg` nuevo y arrastra la app a Aplicaciones (*Reemplazar*). O, con
+la carpeta del código, `bash instalar.sh` (compila la versión nueva y sustituye la anterior).
+
+Tu configuración, presets, cuentas y conversaciones se conservan: están fuera de la app. Claude Code se
+actualiza solo.
 
 Si habías mejorado la app con el preset *Mejorar Claude Assistant*, tras actualizar arranca la versión
 original: abre el preset y pídele que integre tus cambios en la nueva.

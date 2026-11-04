@@ -289,8 +289,19 @@ export function createAccounts({ file, legacyDecrypt, claudeExe, env }) {
           const why = out.split('\n').map((l) => l.trim()).filter((l) => l && !/^https?:/.test(l) && !/Paste code|Opening browser|If the browser/.test(l)).pop();
           return reject(new Error(why || `No se pudo iniciar sesión (código ${code}).`));
         }
+        // Otra vez la misma (p. ej. con la sesión caducada): sus tokens nuevos también donde ya la usan,
+        // ~/.claude si es la principal o su perfil, que si no conservarían los caducados
+        const info = describe(entry);
+        const renewed = load().some((a) => a.key === info.key);
         remember(entry);
-        resolve(describe(entry));
+        if (renewed) {
+          if (activeKey() === info.key) writeCreds(CONFIG_DIR, { ...readCreds(CONFIG_DIR), claudeAiOauth: entry.oauth });
+          else {
+            const pdir = profileDir(info.key);
+            if (fs.existsSync(path.join(pdir, '.claude.json'))) writeCreds(pdir, { ...readCreds(pdir), claudeAiOauth: entry.oauth });
+          }
+        }
+        resolve({ ...info, renewed });
       });
     });
   }

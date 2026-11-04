@@ -188,6 +188,7 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       pending: new Map(), // promptId -> { res, toolName, key, suggestions, input }
       touch: new Map(), // id de la herramienta -> documentos que puede crear o cambiar (ver trackFiles)
       maybe: new Map(), // documento -> { since, mtime }: tras cada herramienta se mira si ha cambiado
+      opened: [], // documentos que el usuario ha abierto a mano en el panel: se le cuentan a Claude con su siguiente mensaje
     };
     tabs.set(conv.id, t);
     return t;
@@ -581,7 +582,7 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     if (input.transcript_path) setTranscript(t, input.transcript_path);
     const ev = input.hook_event_name;
     if (ev === 'PermissionRequest') return onPermission(t, input, res);
-    reply(res, {});
+    reply(res, ev === 'UserPromptSubmit' ? openedContext(t) : {});
     if (ev === 'UserPromptSubmit') {
       t.conv.busy = true;
       flush(t, true);
@@ -597,6 +598,21 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       }, 800);
     }
     return undefined;
+  }
+
+  // Como el <ide_opened_file> de Claude Code con un IDE conectado: Claude sabe qué tiene el usuario delante
+  function openedContext(t) {
+    if (!t.opened.length) return {};
+    const additionalContext = t.opened.splice(0).map((f) => `<ide_opened_file>The user opened the file ${f} in the document panel next to the chat. This may or may not be related to the current task.</ide_opened_file>`).join('\n');
+    return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext } };
+  }
+  function noteOpened(id, files, open = true) {
+    const t = tabs.get(id);
+    if (!t || !Array.isArray(files)) return;
+    const same = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+    files = files.map(String);
+    t.opened = t.opened.filter((f) => !files.some((g) => same(f, g)));
+    if (open) t.opened.push(...files);
   }
 
   function onPermission(t, input, res) {
@@ -956,5 +972,5 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     server.close();
   }
 
-  return { hookSettings, attach, start, stop, fail, hold, setBusy, send, sendNow, interrupt, rewind, unqueue, backgroundStopped, respond, detach, close, has: (id) => tabs.has(id) };
+  return { hookSettings, attach, start, stop, fail, hold, setBusy, send, sendNow, interrupt, rewind, unqueue, backgroundStopped, respond, noteOpened, detach, close, has: (id) => tabs.has(id) };
 }

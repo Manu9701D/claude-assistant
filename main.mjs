@@ -1954,6 +1954,7 @@ ipcMain.handle('chat:interrupt', (_e, id) => termchat.interrupt(id));
 ipcMain.handle('chat:sendNow', (_e, id) => termchat.sendNow(id));
 ipcMain.handle('chat:rewind', (_e, id, msgId) => termchat.rewind(id, msgId));
 ipcMain.handle('chat:unqueue', (_e, id, uuid) => termchat.unqueue(id, uuid));
+ipcMain.handle('chat:opened', (_e, id, files, open) => termchat.noteOpened(id, files, open));
 // /tasks: salida de lo que sigue en segundo plano y detenerlo (bgtasks.mjs)
 const bgTask = (id, taskId) => terminals.get(id)?.background?.find((x) => x.id === taskId);
 ipcMain.handle('bg:output', (_e, id, taskId) => readOutput(bgTask(id, taskId)));
@@ -2219,8 +2220,17 @@ ipcMain.handle('accounts:login', async (e) => {
   try {
     const a = await accounts.login({ onUrl: (url) => post(w, 'accounts:login-url', url) });
     // La primera cuenta pasa a ser la de Claude Code; las demás, solo la de esta ventana
+    // Sesión renovada (había caducado): las pestañas que ya iban con esa cuenta, en todas las ventanas, se
+    // vuelven a lanzar con los tokens nuevos retomando su conversación (las que trabajan, al terminar).
+    // Las que cambian de cuenta ya las relanza setWinAccount
+    const stale = a.renewed ? terminals.list().filter((c) => sameAccount(c.account, a.key)).map((c) => c.id) : [];
     if (!accounts.activeKey()) { accounts.use(a.key); accountChanged(); }
     else setWinAccount(w, a.key);
+    if (a.renewed && !accKey(a.key)) accountChanged(); // sondas de uso con los tokens nuevos
+    for (const id of stale) {
+      if (convOf(id)?.busy) pendingRelaunch.add(id);
+      else if (convOf(id)) terminals.restart(id);
+    }
     return { ok: true, account: a };
   } catch (err) {
     return { ok: false, cancelled: err.message === 'cancelled', error: err.message };

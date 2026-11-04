@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('api', {
   send: (id, payload) => ipcRenderer.invoke('chat:send', id, payload),
   interrupt: (id) => ipcRenderer.invoke('chat:interrupt', id),
   sendNow: (id) => ipcRenderer.invoke('chat:sendNow', id),
+  noteOpened: (id, files, open) => ipcRenderer.invoke('chat:opened', id, files, open),
   rewind: (id, msgId) => ipcRenderer.invoke('chat:rewind', id, msgId),
   unqueue: (id, uuid) => ipcRenderer.invoke('chat:unqueue', id, uuid),
   bgOutput: (id, taskId) => ipcRenderer.invoke('bg:output', id, taskId),

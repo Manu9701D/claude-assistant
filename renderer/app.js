@@ -107,7 +107,7 @@ const LOCAL_COMMANDS = [
   { name: 'theme', description: 'Cambia el tema: sistema, claro u oscuro', argumentHint: '' },
   { name: 'usage', description: 'Uso del plan: sesión de 5 h y semana', argumentHint: '' },
   { name: 'status', description: 'Versión, cuenta, modelo, carpeta y modo', argumentHint: '' },
-  { name: 'login', description: 'Cambia de cuenta de Claude o inicia sesión con otra', argumentHint: '' },
+  { name: 'login', description: 'Inicia sesión con tu cuenta de Claude (también para renovarla si ha caducado)', argumentHint: '' },
   { name: 'mcp', description: 'Servidores MCP: estado, reconectar, activar o desactivar', argumentHint: '' },
   { name: 'memory', description: 'Abre un CLAUDE.md para editarlo', argumentHint: '' },
   { name: 'permissions', description: 'Reglas de permisos (allow / ask / deny)', argumentHint: '' },
@@ -448,11 +448,13 @@ async function linkDocs(c) {
   const picked = await api.pickDocs(c.cwd).catch(() => []);
   if (!picked.length || !state.convs.has(c.id)) return;
   await setDocLinks(c, [...picked, ...docLinks(c).filter((p) => !picked.some((q) => sameFile(p, q)))]);
+  api.noteOpened(c.id, picked, true).catch(() => {}); // Claude lo sabrá con el siguiente mensaje
   if (c.id === state.activeId) openFileArtifact(picked[0], c.id);
   renderDocsButton();
 }
 async function unlinkDoc(c, file) {
   await setDocLinks(c, docLinks(c).filter((p) => !sameFile(p, file)));
+  api.noteOpened(c.id, [file], false).catch(() => {});
   if (!artFiles.hidden) toggleFileList(true);
   renderDocsButton();
 }
@@ -2514,7 +2516,7 @@ async function runLocalCommand(name, arg) {
       return true;
     }
     case 'login':
-      await openAccountMenu($('#composer'), 'above');
+      await startLogin(); // como en Claude Code: directamente al navegador (el selector de cuentas es el botón de la barra de título)
       return true;
     case 'help':
       showHelp();
@@ -3075,7 +3077,7 @@ async function switchAccount(key) {
   applyConfigUi(await api.getConfig()); // usar una cuenta pasa a «Sesión de Claude Code»
 }
 
-// Selector de cuenta: el de la barra de título y /login
+// Selector de cuenta: el de la barra de título
 async function openAccountMenu(anchor, placement) {
   const list = await api.accounts();
   openPopover(anchor, 'Cuenta de esta ventana · ↑↓ y Enter', [
@@ -3200,7 +3202,7 @@ async function startLogin() {
   const r = await api.login();
   loginDialog.close();
   if (r.ok) {
-    toast(`Sesión iniciada con ${r.account.email}. Esta ventana y sus pestañas pasan a usarla.`);
+    toast(r.account.renewed ? `Sesión renovada con ${r.account.email}. Sus pestañas se vuelven a abrir con ella.` : `Sesión iniciada con ${r.account.email}. Esta ventana y sus pestañas pasan a usarla.`);
     if ($('#settings').open) renderAccounts();
     applyConfigUi(await api.getConfig());
   } else if (!r.cancelled) toast(r.error, 'err');

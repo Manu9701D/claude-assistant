@@ -68,5 +68,8 @@ fs.mkdirSync(DIST, { recursive: true });
 const dmg = path.join(DIST, `Claude-Assistant-${pkg.version}-mac-${arch}.dmg`);
 run('hdiutil', ['create', '-volname', 'Claude Assistant', '-srcfolder', stage, '-ov', '-format', 'UDZO', dmg]);
 
-fs.copyFileSync(path.join(__dirname, 'LEEME-mac.md'), path.join(DIST, 'LEEME-mac.md'));
-console.log(`\nListo: ${path.relative(ROOT, dmg)} y dist/LEEME-mac.md`);
+// Junto al .dmg, lo que hace falta para actualizar desde la propia app (ACTUALIZAR-CON-CLAUDE.md)
+for (const f of ['LEEME-mac.md', 'ACTUALIZAR-CON-CLAUDE.md']) fs.copyFileSync(path.join(__dirname, f), path.join(DIST, f));
+fs.copyFileSync(path.join(__dirname, 'actualizar-mac.sh'), path.join(DIST, 'actualizar.sh'));
+fs.chmodSync(path.join(DIST, 'actualizar.sh'), 0o755);
+console.log(`\nListo: ${path.relative(ROOT, dmg)}, dist/actualizar.sh, dist/ACTUALIZAR-CON-CLAUDE.md y dist/LEEME-mac.md`);
