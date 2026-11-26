@@ -88,6 +88,10 @@ const TEMP_DIRS = [...new Set([os.tmpdir(), ...(process.platform === 'win32' ? [
   .flatMap((d) => { try { return [d, fs.realpathSync(d)]; } catch { return [d]; } }))]
   .map((d) => path.normalize(d).replace(/[\\/]+$/, '') + path.sep);
 const sameCase = (s) => (process.platform === 'win32' || process.platform === 'darwin' ? s.toLowerCase() : s);
+const fileKey = (f) => (process.platform === 'win32' ? f.toLowerCase() : f);
+const sameFile = (a, b) => fileKey(String(a)) === fileKey(String(b));
+const CLAUDE_DIR = path.normalize(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'));
+const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 const LOCAL_SCRIPT = /<script\b[^>]*\bsrc\s*=\s*["']?(?!https?:|data:|blob:|\/\/)[^"'\s>]/i;
 // Plantillas de servidor (Django, Jinja, Liquid…): {% … %}, o {{ … }} sin scripts (con ellos puede ser Vue)
 const TEMPLATE = (s) => /\{%[\s\S]{0,200}?%\}/.test(s) || (!/<script\b/i.test(s) && /\{\{[\s\S]{0,200}?\}\}/.test(s));
@@ -189,6 +193,7 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       touch: new Map(), // id de la herramienta -> documentos que puede crear o cambiar (ver trackFiles)
       maybe: new Map(), // documento -> { since, mtime }: tras cada herramienta se mira si ha cambiado
       opened: [], // documentos que el usuario ha abierto a mano en el panel: se le cuentan a Claude con su siguiente mensaje
+      base: new Map(), // archivo editado -> { backup, version }: la copia de antes que guarda Claude Code (file-history, la de /rewind)
     };
     tabs.set(conv.id, t);
     return t;
@@ -248,6 +253,7 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       t.conv.files = [];
       t.touch.clear();
       t.maybe.clear();
+      t.base.clear();
     }
     t.at.clear();
     t.lastUuid = null;
@@ -428,12 +434,25 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     if (rec.isSidechain) return false;
     const conv = t.conv;
     switch (rec.type) {
+      case 'file-history-snapshot': {
+        // Lo que Claude Code respalda antes de cambiar cada archivo: la versión más antigua es la de antes
+        // de la sesión (o null si lo ha creado él). El panel compara con ella («Cambios»)
+        for (const [key, v] of Object.entries(rec.snapshot?.trackedFileBackups || {})) {
+          if (!v || typeof v !== 'object') continue;
+          const full = path.normalize(path.isAbsolute(key) ? key : v.realParentDir ? path.join(v.realParentDir, path.basename(key)) : path.resolve(conv.cwd || '.', key));
+          const k = fileKey(full);
+          const old = t.base.get(k);
+          if (!old || (v.version || 0) < old.version) t.base.set(k, { backup: v.backupFileName || null, version: v.version || 0 });
+        }
+        return false;
+      }
       case 'permission-mode':
         if (rec.permissionMode) conv.permissionMode = rec.permissionMode;
         return true;
       case 'attachment': {
         const a = rec.attachment;
-        if (a?.type === 'queued_command' && a.origin?.kind === 'human' && typeof a.prompt === 'string') { addUser(t, unwrapPasted(a.prompt)); return true; }
+        // Escrito mientras trabajaba: Claude Code lo mete en el turno en curso y no sale en /rewind (queued)
+        if (a?.type === 'queued_command' && a.origin?.kind === 'human' && typeof a.prompt === 'string') { addUser(t, unwrapPasted(a.prompt), [], { queued: true }); return true; }
         return false;
       }
       case 'system':
@@ -541,7 +560,9 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
         output: output || null, startedAt: Date.parse(timestamp || 0) || Date.now(),
       }];
     }
-    trackFiles(t, b.tool_use_id, Date.parse(timestamp || 0) >= t.startedAt - 5000);
+    const live = Date.parse(timestamp || 0) >= t.startedAt - 5000;
+    if (!tool.isError && EDIT_TOOLS.has(tool.name)) noteEdit(t, structured?.filePath || tool.input?.file_path || tool.input?.notebook_path, live, structured?.type === 'create');
+    trackFiles(t, b.tool_use_id, live);
     // Si el permiso se contestó en la terminal, la tarjeta sobra
     const key = t.keys.get(b.tool_use_id);
     for (const [pid, p] of t.pending) if (p.key === key) settle(t, pid, {});
@@ -568,8 +589,57 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
       if (!st.size) continue; // recién creado y aún vacío: se vuelve a mirar cuando tenga algo
       m.mtime = mtime;
       if (!isDocument(f)) continue;
-      t.conv.files = [{ path: f, at: mtime, live }, ...(t.conv.files || []).filter((x) => x.path !== f)].slice(0, 30); // live: se acaba de cambiar (se abre solo)
+      addFile(t, { path: f, at: mtime, live, doc: true }); // live: se acaba de cambiar (se abre solo)
     }
+  }
+
+  // Al principio de conv.files (lo más reciente primero), sin perder lo que ya se sabía de él
+  function addFile(t, entry) {
+    const old = (t.conv.files || []).find((x) => sameFile(x.path, entry.path));
+    t.conv.files = [{ ...old, ...entry, edit: !!(old?.edit || entry.edit), doc: !!(old?.doc || entry.doc), created: !!(old?.created || entry.created) },
+      ...(t.conv.files || []).filter((x) => x !== old)].slice(0, 60);
+  }
+
+  // Archivos que Claude crea o cambia con Write/Edit, también código: el panel los lista («Cambiados en
+  // esta conversación») y enseña sus cambios. No los de las carpetas temporales ni los de Claude Code
+  function noteEdit(t, file, live, created) {
+    if (!file || typeof file !== 'string') return;
+    const f = path.normalize(path.resolve(t.conv.cwd || '.', file));
+    const low = sameCase(f);
+    if (TEMP_DIRS.some((d) => low.startsWith(sameCase(d))) || low.startsWith(sameCase(CLAUDE_DIR + path.sep))) return;
+    if (/^[\\/]{2}/.test(f)) return; // en otro equipo: mirarlo bloquearía el proceso principal
+    let at;
+    try { at = fs.statSync(f).mtimeMs; } catch { return; } // ya no existe
+    const doc = PREVIEW_EXT.has(extOf(f)) && isDocument(f);
+    // Un documento lo abre trackFiles con su «live» si ha cambiado de verdad: aquí no se adelanta
+    addFile(t, { path: f, at, live: false, edit: true, doc, created });
+  }
+
+  // Versión de antes de la sesión de un archivo editado: { text }, { created } (no existía) o null (no se sabe)
+  async function fileBase(id, file) {
+    const t = tabs.get(id);
+    const full = path.normalize(String(file || ''));
+    if (!t?.file || !t.conv.sessionId) return null;
+    const dir = path.join(path.dirname(path.dirname(path.dirname(t.file))), 'file-history', t.conv.sessionId);
+    let backup = t.base.get(fileKey(full))?.backup;
+    if (backup === undefined) {
+      // Aún sin apuntar (Claude Code lo apunta con el mensaje siguiente), pero la copia ya está: se llama
+      // <sha256 de la ruta, 16 cifras>@v<versión>, y la de versión más baja es la de antes de la sesión
+      const hash = crypto.createHash('sha256').update(full).digest('hex').slice(0, 16);
+      let names = [];
+      try { names = await fs.promises.readdir(dir); } catch {}
+      const v = names.filter((n) => n.startsWith(`${hash}@v`)).map((n) => Number(n.slice(hash.length + 2))).filter((n) => n > 0).sort((a, b) => a - b)[0];
+      const known = (t.conv.files || []).find((x) => sameFile(x.path, full));
+      if (known?.created) return { created: true }; // creado en esta sesión: no hay copia de antes
+      if (!v) return null;
+      backup = `${hash}@v${v}`;
+    }
+    if (!backup) return { created: true };
+    const f = path.join(dir, backup);
+    try {
+      if ((await fs.promises.stat(f)).size > 5 * 1024 * 1024) return null;
+      return { text: await fs.promises.readFile(f, 'utf8') };
+    } catch { return null; }
   }
 
   // ---------- Hooks ----------
@@ -973,5 +1043,5 @@ export function createTermChat({ emit, write, ctxLimits = () => null }) {
     server.close();
   }
 
-  return { hookSettings, attach, start, stop, fail, hold, setBusy, send, sendNow, interrupt, rewind, unqueue, backgroundStopped, respond, noteOpened, detach, close, has: (id) => tabs.has(id) };
+  return { hookSettings, attach, start, stop, fail, hold, setBusy, send, sendNow, interrupt, rewind, unqueue, backgroundStopped, respond, noteOpened, fileBase, detach, close, has: (id) => tabs.has(id) };
 }

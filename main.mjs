@@ -16,7 +16,7 @@ import { createTermChat, unwrapPasted } from './termchat.mjs';
 import { createHttpMcp } from './mcp-http.mjs';
 import { createUnixJobs } from './unix-jobs.mjs';
 import { readOutput, stopTask } from './bgtasks.mjs';
-import { createDocView, PREVIEW_EXT } from './docview.mjs';
+import { createDocView, PREVIEW_EXT, listFiles } from './docview.mjs';
 import { createSchedules, cleanSchedule, nextRun } from './schedules.mjs';
 import { watchHangs } from './hangs.mjs';
 import { SELF_ID, selfPreset, prepareSelf, selfStateFile } from './mejoras.mjs';
@@ -756,8 +756,10 @@ function ctxLimits(conv) {
   }
   return ctxCache.get(key) || { max: 200000, compactAt: null };
 }
-// Pestañas de terminal trabajando (o esperando una respuesta o con mensajes en cola)
-const terminalsBusy = () => terminals.list().filter((c) => c.busy || c.prompts?.length || c.queue?.length).length;
+// Pestañas trabajando de verdad (o con mensajes en cola), para el aviso de reinicio. No cuentan la que lo
+// pide (la conversación que lanza tools/apply.cjs, que acaba sola al momento) ni las que solo esperan una
+// respuesta del usuario: no acabarían nunca. Los procesos en segundo plano tampoco: no acaban solos
+const busyTabs = (except) => terminals.list().filter((c) => c.id !== except && (c.busy || c.queue?.length) && !c.prompts?.length);
 const terminals = createTerminals({
   command: terminalCommand,
   send,
@@ -977,9 +979,12 @@ function restartApp() {
 }
 
 // Cambios aplicados: se ofrece reiniciar (ahora, cuando terminen las pestañas o más tarde)
-function offerRestart(text) {
+let restartFrom = null; // pestaña que ha pedido el reinicio
+function offerRestart(text, session) {
+  if (session !== undefined) restartFrom = terminals.list().find((c) => c.id === session || c.sessionId === session)?.id || null;
+  const busy = busyTabs(restartFrom);
   showWindow();
-  post(win, 'update:ready', { busy: terminalsBusy(), text });
+  post(win, 'update:ready', { busy: busy.length, names: busy.map((c) => String(c.title || 'Sin título').slice(0, 60)), text });
 }
 
 // tools/apply.cjs y tools/dev.cjs piden el reinicio dejando este archivo ({ mode: 'offer' | 'now', text? }).
@@ -989,7 +994,7 @@ function checkRestartRequest() {
   const req = readJson(REQUEST_FILE, null);
   if (!req) return;
   fs.rmSync(REQUEST_FILE, { force: true });
-  if (req.mode === 'now') restartApp(); else offerRestart(req.text);
+  if (req.mode === 'now') restartApp(); else offerRestart(req.text, req.session || null);
 }
 fs.rmSync(REQUEST_FILE, { force: true });
 fs.watchFile(REQUEST_FILE, { interval: 700 }, checkRestartRequest);
@@ -997,8 +1002,12 @@ fs.watchFile(REQUEST_FILE, { interval: 700 }, checkRestartRequest);
 ipcMain.handle('update:restart', (_e, { whenIdle } = {}) => {
   if (!whenIdle) return restartApp();
   clearInterval(idleWait);
+  // También espera a que acabe el turno de la que lo pidió (es cosa de segundos). Si a los 15 min alguna
+  // sigue, se vuelve a preguntar en vez de esperar para siempre
+  const until = Date.now() + 15 * 60000;
   idleWait = setInterval(() => {
-    if (!terminalsBusy()) restartApp();
+    if (!busyTabs(null).length) restartApp();
+    else if (Date.now() > until) { clearInterval(idleWait); idleWait = null; offerRestart('Siguen pestañas trabajando desde hace 15 minutos. Puedes reiniciar ya (se retoman al volver) o esperar más.'); }
   }, 2000);
 });
 ipcMain.on('tabs:order', (e, order, active) => { winTabs.set(senderWin(e), { order, active }); });
@@ -1223,7 +1232,7 @@ ipcMain.handle('dialog:docs', async (e, cwd) => {
   const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
     title: 'Abrir en el panel de esta conversación', defaultPath: cwd && fs.existsSync(cwd) ? cwd : os.homedir(),
     properties: ['openFile', 'multiSelections'],
-    filters: [{ name: 'Documentos', extensions: [...PREVIEW_EXT] }],
+    filters: [{ name: 'Documentos', extensions: [...PREVIEW_EXT] }, { name: 'Todos los archivos', extensions: ['*'] }],
   });
   return r.canceled ? [] : r.filePaths;
 });
@@ -1835,18 +1844,37 @@ ipcMain.handle('preview:html', (e, html) => {
 // Documentos en el panel lateral (Word, Excel, PDF, HTML, imágenes…): los sirve docview.mjs en
 // 127.0.0.1 y cada ventana vigila el que enseña para recargarlo al cambiar
 const docView = createDocView({ log: logError('vista previa') });
-const docWatch = new Map(); // webContents.id -> dejar de vigilar
+const docWatch = new Map(); // webContents.id -> (archivo -> dejar de vigilarlo)
 app.on('will-quit', () => docView.close());
 ipcMain.handle('preview:file', (_e, file, cwd) => (file && fs.existsSync(file) ? docView.urlFor(file, cwd) : null));
 ipcMain.handle('preview:readText', (_e, file) => docView.readText(String(file)));
-ipcMain.handle('preview:saveText', (_e, file, text, ver) => docView.saveText(String(file), text, Number(ver)));
-ipcMain.handle('preview:watch', (e, file) => {
+ipcMain.handle('preview:saveText', (_e, file, text, ver, force) => docView.saveText(String(file), text, Number(ver), !!force));
+// La versión de antes de la sesión de un archivo que Claude ha cambiado (pestaña «Cambios» del panel)
+ipcMain.handle('preview:base', (_e, convId, file) => termchat.fileBase(String(convId), String(file)));
+// Archivos de la carpeta de la pestaña, para buscarlos en el panel
+ipcMain.handle('files:list', (_e, cwd) => (cwd && fs.existsSync(cwd) ? listFiles(path.resolve(cwd)) : { files: [] }));
+// Workers de Monaco (el editor del panel): sus nombres llevan un hash que cambia con cada versión
+let monacoWorkers = null;
+ipcMain.handle('monaco:workers', () => {
+  if (monacoWorkers) return monacoWorkers;
+  monacoWorkers = {};
+  try {
+    for (const f of fs.readdirSync(path.join(__dirname, 'node_modules', 'monaco-editor', 'min', 'vs', 'assets'))) {
+      const k = /^(editor|json|css|html|ts)\.worker-[\w-]+\.js$/.exec(f)?.[1];
+      if (k) monacoWorkers[k] = f;
+    }
+  } catch {}
+  return monacoWorkers;
+});
+// Se vigilan todos los archivos abiertos en el panel de la ventana (el que se ve y los de sus otras pestañas)
+ipcMain.handle('preview:watch', (e, files) => {
   const wc = e.sender;
-  docWatch.get(wc.id)?.();
-  docWatch.delete(wc.id);
-  if (!file) return;
-  if (!wc.docWatched) { wc.docWatched = true; wc.once('destroyed', () => { docWatch.get(wc.id)?.(); docWatch.delete(wc.id); }); }
-  docWatch.set(wc.id, docView.watch(file, () => { if (!wc.isDestroyed()) wc.send('preview:changed', file); }));
+  const list = [...new Set((Array.isArray(files) ? files : files ? [files] : []).map(String))].slice(0, 30);
+  const old = docWatch.get(wc.id) || new Map();
+  for (const [f, stop] of old) if (!list.includes(f)) { stop(); old.delete(f); }
+  for (const f of list) if (!old.has(f)) old.set(f, docView.watch(f, () => { if (!wc.isDestroyed()) wc.send('preview:changed', f); }));
+  docWatch.set(wc.id, old);
+  if (!wc.docWatched) { wc.docWatched = true; wc.once('destroyed', () => { for (const stop of docWatch.get(wc.id)?.values() || []) stop(); docWatch.delete(wc.id); }); }
 });
 ipcMain.handle('show-in-folder', (_e, p) => shell.showItemInFolder(p));
 // El panel de artefactos pinta el HTML en un <webview>: siempre aislado como la ventana de arriba

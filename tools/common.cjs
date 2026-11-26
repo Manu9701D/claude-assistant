@@ -35,7 +35,8 @@ function appEnv(profile) {
 
 // Pide a la app (la de pruebas o la de uso) que se reinicie: 'now' directamente, 'offer' preguntando.
 // Es un archivo que la app vigila, así que no se ejecuta el código nuevo para avisarla.
-const requestRestart = (dataDir, mode) => fs.writeFileSync(path.join(dataDir, 'restart-request.json'), JSON.stringify({ mode, at: Date.now() }));
+// session: la conversación que lo pide (Claude Code la pasa a sus comandos), que no cuenta como «trabajando»
+const requestRestart = (dataDir, mode) => fs.writeFileSync(path.join(dataDir, 'restart-request.json'), JSON.stringify({ mode, at: Date.now(), session: process.env.CLAUDE_CODE_SESSION_ID || null }));
 
 async function waitReady(dataDir, since, ms = 45000) {
   for (let t = 0; t < ms; t += 500) {

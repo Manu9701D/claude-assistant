@@ -163,7 +163,7 @@ test('cola: espera a que Claude Code esté listo; trabajando, pasa a la de Claud
   assert.deepEqual(conv.queue.map((m) => [m.text, m.sent]), [['Dos', true], ['Tres', true]]);
   append({ type: 'attachment', attachment: { type: 'queued_command', origin: { kind: 'human' }, prompt: 'Dos' } });
   await until(() => conv.queue.length === 1);
-  assert.ok(conv.messages.some((m) => m.role === 'user' && m.text === 'Dos'), 'sale en el chat');
+  assert.ok(conv.messages.some((m) => m.role === 'user' && m.text === 'Dos' && m.queued), 'sale en el chat (sin poder volver a él con /rewind)');
 
   // Quitar uno que ya tenía Claude Code: ↑ sube su cola al campo y se vacía
   typed.length = 0;

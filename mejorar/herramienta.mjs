@@ -152,7 +152,7 @@ function removeTree(dir) {
 }
 
 function requestRestart(text) {
-  write(path.join(ENV.data, 'restart-request.json'), { mode: 'offer', text });
+  write(path.join(ENV.data, 'restart-request.json'), { mode: 'offer', text, session: process.env.CLAUDE_CODE_SESSION_ID || null });
   console.log('La app ofrecerá reiniciarse (ahora, al terminar las pestañas o más tarde). Esta conversación se reabre sola.');
 }
 

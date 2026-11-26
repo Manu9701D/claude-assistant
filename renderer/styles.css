@@ -281,36 +281,7 @@ button.side-head:hover { background: var(--raised); color: var(--text-2); }
 .artifact-resize:hover, .art-resizing .artifact-resize { background: color-mix(in srgb, var(--accent) 35%, transparent); }
 .art-resizing, .art-resizing * { cursor: col-resize !important; user-select: none; }
 .art-resizing webview { pointer-events: none; }
-.artifact-head { display: flex; align-items: center; gap: 4px; padding: 8px 10px 8px 16px; border-bottom: 1px solid var(--border); }
-.artifact-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 550; color: var(--text); }
-.artifact-tabs { display: flex; padding: 2px; margin-right: 6px; border-radius: 8px; background: var(--raised); }
-.artifact-tabs button { padding: 3px 10px; border-radius: 6px; font-size: 12.5px; color: var(--muted); }
-.artifact-tabs button:hover { color: var(--text); }
-.artifact-tabs button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
-.artifact-head .icon-btn[hidden] { display: none; }
-.artifact-body { flex: 1; min-height: 0; overflow: auto; }
-.artifact-body[hidden] { display: none !important; }
-.artifact-body.is-html { overflow: hidden; background: #fff; }
-.artifact-body webview { display: flex; width: 100%; height: 100%; }
-.artifact-body.is-svg, .artifact-body.is-mermaid { display: flex; align-items: flex-start; justify-content: center; padding: 24px; background: var(--bg); }
-.artifact-body img { max-width: 100%; height: auto; }
-.artifact-body.is-markdown .md { padding: 22px 28px 40px; font-size: var(--chat-fs); line-height: var(--chat-lh); }
-.artifact-body.is-code pre { margin: 0; padding: 14px 16px; font-size: 13px; line-height: 1.6; background: var(--code-bg); min-height: 100%; box-sizing: border-box; }
-.artifact-body.is-code code { background: none; border: 0; padding: 0; font-size: inherit; }
-/* Código de un documento, editable */
-.artifact-tabs button.dirty::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--accent); vertical-align: 1px; }
-.artifact-body.is-edit { position: relative; overflow: hidden; background: var(--code-bg); }
-.art-edit { display: block; width: 100%; height: 100%; box-sizing: border-box; margin: 0; padding: 14px 16px 64px; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: 13px/1.6 var(--mono, ui-monospace, Consolas, monospace); tab-size: 2; white-space: pre; overflow: auto; }
-.art-edbar { position: absolute; right: 14px; bottom: 14px; display: flex; align-items: center; gap: 4px; max-width: calc(100% - 28px); padding: 5px 5px 5px 14px; background: #2b2a27; color: #f4f3ee; border-radius: 999px; box-shadow: 0 6px 24px rgba(0, 0, 0, .22); font-size: 12.5px; }
-.art-edbar[hidden] { display: none; }
-.art-edbar .msg { margin-right: 6px; min-width: 0; }
-.art-edbar.ok { padding-right: 14px; }
-.art-edbar.ok button { display: none; }
-.art-edbar.err .msg { color: #ffb59c; }
-.art-edbar button { border-radius: 999px; padding: 5px 12px; color: inherit; white-space: nowrap; }
-.art-edbar button:hover { background: rgba(255, 255, 255, .1); }
-.art-edbar button.pri { background: #d97757; color: #fff; }
-.art-edbar button.pri:hover { background: #c6613f; }
+/* El resto del panel, en panel.css */
 /* Ventana estrecha: el panel se pone encima del chat en vez de apretarlo */
 @media (max-width: 900px) {
   #artifact { position: absolute; top: 0; right: 0; bottom: 0; width: min(92vw, 640px) !important; max-width: none; min-width: 0; z-index: 30; box-shadow: -8px 0 24px rgba(0, 0, 0, .18); }
@@ -924,26 +895,6 @@ body.split-left { width: calc(100vw * var(--split, 1)); }
 .msg-actions .icon-btn.on { color: var(--accent); }
 
 /* Documentos en el panel (los que Claude crea o cambia) */
-button.artifact-title { text-align: left; padding: 3px 6px; margin-left: -6px; border-radius: 6px; cursor: default; }
-button.artifact-title.pick { cursor: pointer; }
-button.artifact-title.pick:hover { background: var(--raised); }
-button.artifact-title.pick::after { content: ''; display: inline-block; width: 6px; height: 6px; margin: 0 2px 3px 8px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
-.artifact-files { position: absolute; top: 46px; left: 10px; right: 10px; z-index: 5; max-height: min(60vh, 420px); overflow-y: auto; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: 0 10px 30px rgba(0, 0, 0, .18); }
-.artifact-files[hidden] { display: none; }
-.art-file { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "name at" "dir at"; gap: 0 12px; width: 100%; padding: 6px 10px; border-radius: 7px; text-align: left; }
-.art-file:hover { background: var(--raised); }
-.art-file.on { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.art-file-name { grid-area: name; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.art-file-dir { grid-area: dir; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.art-file-at { grid-area: at; align-self: center; font-size: 11.5px; color: var(--muted); }
-.art-file-name svg { width: 14px; height: 14px; margin: 0 6px -2px 0; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.art-open .art-file-name { color: var(--muted); }
-.art-open:hover .art-file-name { color: var(--text); }
-.art-sep { height: 1px; margin: 4px 8px; background: var(--border); }
-.art-row { position: relative; }
-.art-unlink { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); visibility: hidden; }
-.art-row:hover .art-unlink { visibility: visible; }
-.art-row.linked:hover .art-file-at { visibility: hidden; }
 #panel-toggle.on { color: var(--text); }
 #panel-toggle:disabled { opacity: .35; pointer-events: none; }
 /* Ampliado: el panel ocupa el sitio del chat */

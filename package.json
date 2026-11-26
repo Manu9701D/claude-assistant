@@ -26,6 +26,7 @@
         "mammoth": "^1.13.0",
         "marked": "^18.0.14",
         "mermaid": "^12.2.0",
+        "monaco-editor": "^0.57.0",
         "node-pty": "^1.1.0",
         "pdfjs-dist": "^6.4.299",
         "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",

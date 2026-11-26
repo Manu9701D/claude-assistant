@@ -225,8 +225,11 @@ function loadMermaid() {
   mermaidLoad ||= new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = '../node_modules/mermaid/dist/mermaid.min.js';
-    s.onload = () => resolve(window.mermaid);
-    s.onerror = () => { mermaidLoad = null; reject(new Error('no se pudo cargar Mermaid')); };
+    // Con Monaco cargado (su define AMD), Mermaid se registraría como módulo en vez de dejar window.mermaid
+    const amd = window.define;
+    window.define = undefined;
+    s.onload = () => { window.define = amd; resolve(window.mermaid); };
+    s.onerror = () => { window.define = amd; mermaidLoad = null; reject(new Error('no se pudo cargar Mermaid')); };
     document.head.append(s);
   });
   return mermaidLoad;
@@ -263,150 +266,494 @@ function refreshPreviews() {
 }
 darkMq.addEventListener('change', () => { if ([...diagrams.keys()].some((k) => k[0] === 'm')) refreshPreviews(); });
 
-// ---------- Panel de artefactos (como claude.ai): HTML, SVG, diagramas y documentos a un lado del chat ----------
-// El HTML va en un <webview> aislado (main.mjs lo fuerza: sandbox, sin preload, sesión propia, solo data:)
+// ---------- Panel de documentos (a la derecha del chat, como los artefactos de claude.ai) ----------
+// Cada pestaña del chat tiene el suyo, con varias pestañas de archivo: documentos (Word, Excel, PDF, HTML,
+// imágenes, en un <webview> aislado: los sirve docview.mjs), cualquier archivo de texto en Monaco (editable,
+// Ctrl+S), lo que Claude ha cambiado en la sesión (Cambios: contra la copia que guarda Claude Code en
+// file-history), páginas locales, los diagramas y HTML del chat y la conversación misma.
 const artEl = $('#artifact');
-const ART = { html: ['Página', 'html', 'html'], svg: ['SVG', 'svg', 'xml'], mermaid: ['Diagrama', 'mmd', 'mermaid'], markdown: ['Documento', 'md', 'markdown'], conv: ['Conversación', 'md', 'markdown'], url: ['Página local'] };
+const artStrip = artEl.querySelector('.art-tabs');
+const artHead = artEl.querySelector('.artifact-head');
+const artQuick = artEl.querySelector('.art-quick');
+const artEmpty = artEl.querySelector('.art-empty');
+const ART = { html: ['Página', 'html', 'html'], svg: ['SVG', 'svg', 'xml'], mermaid: ['Diagrama', 'mmd', 'plaintext'], markdown: ['Documento', 'md', 'markdown'], conv: ['Conversación', 'md', 'markdown'], url: ['Página local'] };
 // Los enlaces del chat a un servidor de este equipo (vista previa en vivo, servidor de desarrollo) se abren en el panel
 const LOCAL_URL = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i;
-let artifact = null; // { convId, kind, text, key, title, tab }
-artEl.querySelector('[data-art="copy"]').innerHTML = I.copy;
-artEl.querySelector('[data-art="save"]').innerHTML = I.download;
-artEl.querySelector('[data-art="window"]').innerHTML = I.external;
+// Lo que se ve como página (docview.mjs lo convierte o lo sirve tal cual) y lo que no es texto
+const VIEW_EXT = /\.(docx|xlsx|xlsm|xls|ods|csv|tsv|pptx|pdf|html?|svg|md|markdown|png|jpe?g|gif|webp)$/i;
+const NOT_TEXT = /\.(docx|xlsx|xlsm|xls|ods|pptx|pdf|png|jpe?g|gif|webp|bmp|ico|zip|7z|rar|gz|tgz|tar|exe|dll|so|dylib|bin|woff2?|ttf|otf|eot|mp[34]|wav|ogg|webm|mov|avi|sqlite|db|pyc|class|jar)$/i;
+// Lo que Claude crea o cambia y se abre solo (el código y el Markdown, no: en un proyecto serían muchos)
+const AUTO_DOC = /\.(docx|xlsx|xlsm|xls|ods|csv|tsv|pptx|pdf|html?|svg|png|jpe?g|gif|webp)$/i;
+const MAX_ITEMS = 12;
+const TAB_NAMES = { view: 'Vista', code: 'Código', diff: 'Cambios' };
+const sameFile = (a, b) => (IS_WIN ? String(a).toLowerCase() === String(b).toLowerCase() : a === b);
+const fileKey = (f) => `f:${IS_WIN ? String(f).toLowerCase() : f}`;
+const panels = new Map(); // convId -> { items, active, hidden, empty, wide, dismissed, unseen }
+let shownConv = null; // pestaña del chat cuyo panel se ve
+let artifact = null; // la pestaña del panel a la vista
+let itemSeq = 0;
+artHead.querySelector('[data-art="copy"]').innerHTML = I.copy;
+artHead.querySelector('[data-art="save"]').innerHTML = I.download;
+artHead.querySelector('[data-art="window"]').innerHTML = I.external;
+artHead.querySelector('[data-art="folder"]').innerHTML = I.folder;
 artEl.querySelector('[data-art="close"]').innerHTML = I.x;
-artEl.querySelector('[data-art="folder"]').innerHTML = I.folder;
 artEl.querySelector('[data-art="wide"]').innerHTML = '<svg viewBox="0 0 20 20"><path d="M12 3.5h4.5V8M8 16.5H3.5V12M16.5 3.5 11.5 8.5M3.5 16.5l5-5"/></svg>';
-artEl.querySelector('.artifact-title').addEventListener('click', () => { if (artifact) toggleFileList(); });
+artEl.querySelector('[data-art="quick"]').innerHTML = I.plus;
+artEmpty.querySelector('.art-empty-ico').innerHTML = I.file;
+artEmpty.querySelector('.sub').textContent = `${K('Ctrl+P')} para abrir un archivo`;
+artEl.querySelector('[data-art="quick"]').title = `Abrir un archivo (${K('Ctrl+P')})`;
 try { const w = Number(localStorage.getItem('artifactW')); if (w) artEl.style.width = `${w}px`; } catch {}
+
+function panelOf(convId) {
+  let p = panels.get(convId);
+  if (!p) {
+    p = { items: [], active: null, hidden: false, empty: false, wide: false, dismissed: new Set(), unseen: new Set() };
+    panels.set(convId, p);
+  }
+  return p;
+}
+function fileItem(file, tab, line) {
+  return { kind: 'file', path: file, text: file, title: baseName(file), key: fileKey(file), tab, line };
+}
+// Qué pestañas tiene (Vista, Código, Cambios)
+const changedIn = (it) => state.convs.get(it.convId)?.files?.find((f) => sameFile(f.path, it.path));
+function tabsOf(it) {
+  if (it.kind === 'url') return ['view'];
+  if (it.kind !== 'file') return ['view', 'code'];
+  const out = [];
+  if (VIEW_EXT.test(it.path)) out.push('view');
+  if (!NOT_TEXT.test(it.path)) { out.push('code'); if (changedIn(it)?.edit) out.push('diff'); }
+  return out.length ? out : ['view'];
+}
+// Abre una pestaña del panel (o va a ella, si ya está). focus: que pase a verse; auto: la abre él solo
+function openItem(convId, it, { focus = true, auto = false } = {}) {
+  const p = panelOf(convId);
+  let cur = p.items.find((x) => x.key === it.key);
+  if (cur) {
+    if (it.kind === 'url' && cur.text !== it.text) { cur.text = it.text; cur.panes?.view?.remove(); delete cur.panes?.view; }
+    if (it.tab) cur.tab = it.tab;
+    if (it.line) cur.line = it.line;
+  } else {
+    cur = { ...it, id: ++itemSeq, convId, auto };
+    p.items.splice(p.active ? p.items.indexOf(p.active) + 1 : p.items.length, 0, cur);
+    trimItems(p);
+  }
+  if (!auto) { cur.auto = false; p.hidden = false; }
+  if (focus || !p.active) { p.active = cur; cur.unseen = false; } else cur.unseen = true;
+  p.empty = false;
+  if (convId === state.activeId) showPanel(convId);
+  return cur;
+}
+// Abrir un archivo a mano: Claude se entera (como al abrirlo en un editor conectado)
+function openFile(file, opts = {}, convId = state.activeId) {
+  const it = openItem(convId, fileItem(file, opts.tab, opts.line));
+  api.noteOpened(convId, [file], true).catch(() => {});
+  return it;
+}
+// Como mucho MAX_ITEMS: fuera las que hace más que no se ven (nunca la activa ni una con cambios sin guardar)
+function trimItems(p) {
+  while (p.items.length > MAX_ITEMS) {
+    const old = p.items.filter((x) => x !== p.active && !x.dirty).sort((a, b) => (a.seenAt || 0) - (b.seenAt || 0))[0];
+    if (!old) return;
+    p.items.splice(p.items.indexOf(old), 1);
+    disposeItem(old);
+  }
+}
+function disposeItem(it) {
+  it.closed = true;
+  for (const k of ['diffEd', 'ed', 'codeEd', 'model', 'baseModel', 'codeModel']) { try { it[k]?.dispose(); } catch {} it[k] = null; }
+  it.body?.remove(); // con su <webview> y su proceso
+  it.body = null;
+}
+// Enseña el panel de una pestaña del chat (y esconde el de la anterior, tal cual: sus <webview> y editores siguen vivos)
+function showPanel(convId = state.activeId) {
+  if (shownConv && shownConv !== convId) for (const x of panels.get(shownConv)?.items || []) if (x.body) x.body.hidden = true;
+  shownConv = convId;
+  const p = panels.get(convId);
+  const visible = !!p && !p.hidden && (p.items.length > 0 || p.empty);
+  artEl.hidden = !visible;
+  artEl.classList.toggle('wide', visible && p.wide);
+  artifact = visible ? p.active : null;
+  for (const x of p?.items || []) if (x.body) x.body.hidden = x !== artifact;
+  artEmpty.hidden = !visible || !!artifact;
+  if (!visible) { closeQuick(); syncWatch(); renderDocsButton(); return; }
+  p.unseen.clear();
+  if (artifact) {
+    artifact.unseen = false;
+    artifact.seenAt = Date.now();
+    renderBody(artifact);
+    if (artifact.stale) refreshItem(artifact);
+  }
+  renderArtTabs();
+  renderHead();
+  syncWatch();
+  renderDocsButton();
+}
+// Al cambiar de pestaña del chat
+function syncArtifact(c) {
+  if ((c?.id || null) !== shownConv) showPanel(c?.id || null);
+}
+// La pestaña del chat se cierra: fuera su panel
+function dropArtifact(convId) {
+  for (const it of panels.get(convId)?.items || []) disposeItem(it);
+  panels.delete(convId);
+  filesSeen.delete(convId);
+  if (shownConv === convId) showPanel(null);
+}
+// Claude la abre con la herramienta vista_previa (también con su pestaña en segundo plano: la verá al volver)
+api.onArtUrl(({ convId, url }) => {
+  if (!state.convs.has(convId)) return;
+  openItem(convId, { kind: 'url', text: url, title: new URL(url).host, key: `u:${new URL(url).origin}` });
+});
 function openArtifactFrom(box) {
   const kind = box.dataset.kind;
   const text = box.querySelector('code').textContent;
   const title = kind === 'html' ? (/<title>([^<]{1,80})<\/title>/i.exec(text)?.[1].trim() || ART.html[0])
     : kind === 'markdown' ? (/^#{1,3}\s+(.{1,80})$/m.exec(text)?.[1] || ART.markdown[0]) : ART[kind][0];
-  showArtifact({ convId: state.activeId, kind, text, key: box.dataset.preview, title, tab: 'view' });
+  openItem(state.activeId, { kind, text, dkey: box.dataset.preview, title, key: `${kind}:${hashText(text)}`, tab: 'view' });
 }
 function openArtifactUrl(url, convId = state.activeId) {
-  showArtifact({ convId, kind: 'url', text: url, title: new URL(url).host, tab: 'view' });
+  openItem(convId, { kind: 'url', text: url, title: new URL(url).host, key: `u:${new URL(url).origin}` });
 }
-// Cada pestaña tiene su panel: al cambiar de pestaña se oculta tal cual (su <webview> sigue vivo: no se
-// recarga ni se pierde lo que se esté editando) y vuelve al volver a ella
-const artSaved = new Map(); // convId -> artifact oculto
-const artHidden = new Set(); // pestañas cuyo panel se ha ocultado con su botón (sigue en artSaved, tal cual)
-function showArtifact(a) {
-  artifact?.body?.remove(); // el anterior de esta pestaña, con su <webview> y su proceso
-  artSaved.get(a.convId)?.body?.remove(); // o el que estaba oculto
-  artSaved.delete(a.convId);
-  artHidden.delete(a.convId);
-  artifact = a;
-  artEl.hidden = false;
-  renderArtifact();
+// Desde la ruta de una herramienta del chat: lo cambiado, en Cambios (si hay copia de antes); lo leído, en su línea
+function openToolFile(file, tab, line) {
+  const c = current();
+  if (!c || !file) return;
+  const it = { kind: 'file', path: file, convId: c.id };
+  const tabs = tabsOf(it);
+  openFile(file, { tab: tabs.includes(tab) ? tab : tabs.includes('code') && tab === 'diff' ? 'code' : undefined, line }, c.id);
 }
-function stashArtifact() {
-  artifact.wide = artEl.classList.contains('wide');
-  if (artifact.body) artifact.body.hidden = true;
-  artSaved.set(artifact.convId, artifact);
-  artifact = null;
-  artEl.hidden = true;
-  artEl.classList.remove('wide');
-  artFiles.hidden = true;
-  watchFile(null);
+function openConvArtifact(convId = state.activeId) {
+  openItem(convId, { kind: 'conv', text: '', title: state.convs.get(convId)?.title || ART.conv[0], key: 'conv', tab: 'view' });
 }
-function unstashArtifact(convId) {
-  artifact = artSaved.get(convId);
-  artSaved.delete(convId);
-  artEl.hidden = false;
-  artEl.classList.toggle('wide', !!artifact.wide);
-  if (!artifact.body) return renderArtifact();
-  artifact.body.hidden = false;
-  renderArtifactHead();
-  if (artifact.kind === 'file') reloadFileArtifact(); // pudo cambiar mientras no se veía
-  else if (artifact.kind === 'conv') renderArtifact();
-}
-// Al cambiar de pestaña: el panel de esta, o lo nuevo que tenga que enseñar
-function syncArtifact(c) {
-  if (artifact && artifact.convId !== c?.id) stashArtifact();
-  if (!c) return;
-  if (!artifact && artSaved.has(c.id) && !artHidden.has(c.id)) unstashArtifact(c.id);
-  if (artPending.has(c.id)) { openArtifactUrl(artPending.get(c.id), c.id); artPending.delete(c.id); }
-  else if (filePending.has(c.id)) { openFileArtifact(filePending.get(c.id), c.id); filePending.delete(c.id); }
-}
-// La pestaña se cierra: fuera su panel, oculto o a la vista
-function dropArtifact(convId) {
-  artSaved.get(convId)?.body?.remove();
-  artSaved.delete(convId);
-  artHidden.delete(convId);
-  if (artifact?.convId !== convId) return;
-  artifact.body?.remove();
-  artifact = null;
-  artEl.hidden = true;
-  artEl.classList.remove('wide');
-  watchFile(null);
-}
-// Claude la abre con la herramienta vista_previa: si su pestaña no está a la vista, al volver a ella
-const artPending = new Map(); // convId -> url
-api.onArtUrl(({ convId, url }) => {
-  if (state.activeId === convId) openArtifactUrl(url, convId);
-  else if (state.convs.has(convId)) artPending.set(convId, url);
-});
-// Documentos que Claude crea o cambia (conv.files, ver trackFiles en termchat.mjs): se abren solos en el
-// panel y se recargan al cambiar (docview.mjs los sirve y los vigila). Markdown no se abre solo: en un
-// proyecto de código serían muchos
-const AUTO_DOC = /\.(docx|xlsx|xlsm|xls|ods|csv|tsv|pptx|pdf|html?|svg|png|jpe?g|gif|webp)$/i;
-const filesSeen = new Map(); // convId -> fecha del último documento ya visto
-const filePending = new Map(); // convId -> ruta que abrir al volver a esa pestaña
-const fileDismissed = new Map(); // convId -> rutas cuyo panel se ha cerrado a mano (no se reabren solas)
-let watching = null;
-function watchFile(file) {
-  if (watching === file) return;
-  watching = file;
-  api.previewWatch(file);
-}
-// auto: lo abre solo (un documento que Claude acaba de cambiar), que no se lleva por delante lo que se edita
-async function openFileArtifact(file, convId = state.activeId, auto = false) {
-  fileDismissed.get(convId)?.delete(file);
-  if (artifact?.kind === 'file' && artifact.path === file && artifact.convId === convId) { reloadFileArtifact(); return; }
-  if (artifact?.kind === 'file' && artifact.convId === convId && (auto ? await artDirty() : !(await confirmDiscard()))) return;
-  showArtifact({ convId, kind: 'file', path: file, text: file, title: baseName(file), tab: 'view' });
-}
-// Documentos editados en el panel (Word, Excel, PDF en la vista; Markdown, HTML y SVG en Código)
-const TEXT_DOC = /\.(md|markdown|html?|svg)$/i;
-async function artDirty(a = artifact) {
-  if (a?.kind !== 'file') return false;
-  if (a.draft != null) return true;
-  if (!a.wv?.isConnected) return false;
-  try { return (await a.wv.executeJavaScript('window.__editor?.estado?.() || ""')) === 'sucio'; } catch { return false; }
-}
-// Cerrar o cambiar de documento con cambios sin guardar: hay que pulsarlo dos veces
-async function confirmDiscard(a = artifact) {
-  if (!(await artDirty(a))) return true;
-  if (Date.now() - (a.discardArmed || 0) < 6000) return true;
-  a.discardArmed = Date.now();
-  toast('Hay cambios sin guardar en el documento: vuelve a pulsar para descartarlos');
-  return false;
-}
+
+// ----- Qué se abre solo -----
+// Los documentos que Claude crea o cambia en esta sesión (conv.files con live y doc, ver trackFiles en
+// termchat.mjs). Sin quitarle el sitio a lo que se está mirando: si la pestaña activa la ha abierto el usuario
+// o tiene cambios sin guardar, el nuevo entra detrás, marcado. Con el panel cerrado a mano no se abre nada:
+// el botón del compositor cuenta los nuevos. Uno que se ha cerrado no vuelve a abrirse solo.
+const filesSeen = new Map(); // convId -> fecha del cambio más reciente ya visto
 function autoPreview(c) {
-  const top = c.files?.[0];
-  if (!top?.live || filesSeen.get(c.id) === top.at) return;
-  filesSeen.set(c.id, top.at);
-  if (state.config?.autoPreview === false || artHidden.has(c.id) || !AUTO_DOC.test(top.path) || fileDismissed.get(c.id)?.has(top.path)) return;
-  if (artifact?.kind === 'file' && artifact.path === top.path && artifact.convId === c.id) return; // ya se ve: lo recarga su vigilancia
-  if (c.id === state.activeId) openFileArtifact(top.path, c.id, true);
-  else filePending.set(c.id, top.path);
+  const files = c.files || [];
+  const last = filesSeen.get(c.id) || 0;
+  const newest = files.reduce((n, f) => Math.max(n, f.at || 0), last);
+  if (newest === last) return;
+  filesSeen.set(c.id, newest);
+  if (state.config?.autoPreview === false) return;
+  const fresh = files.filter((f) => f.live && f.doc && (f.at || 0) > last && AUTO_DOC.test(f.path)).reverse(); // los más antiguos antes
+  if (!fresh.length) return;
+  const p = panelOf(c.id);
+  for (const f of fresh) {
+    const key = fileKey(f.path);
+    if (p.dismissed.has(key)) continue;
+    if (p.hidden) { p.unseen.add(key); continue; }
+    const open = p.items.find((x) => x.key === key);
+    if (open) { if (open !== p.active) open.unseen = true; continue; } // ya abierto: lo recarga su vigilancia
+    const steal = !p.active || (p.active.auto && !p.active.dirty);
+    openItem(c.id, fileItem(f.path), { focus: steal, auto: true });
+  }
+  if (c.id === state.activeId) { renderArtTabs(); renderDocsButton(); }
 }
-// Recargar sin perder por dónde se iba (en las hojas de cálculo, el desplazamiento es de la cuadrícula)
-const SCROLLER = "(document.querySelector('.grid') || document.scrollingElement)";
-async function reloadFileArtifact() {
-  const a = artifact;
-  // En Código: si ha cambiado fuera (no al guardar desde aquí), se relee; con cambios sin guardar, se avisa
-  if (a?.kind === 'file' && a.tab === 'code') {
-    const r = await api.previewReadText(a.path).catch(() => null);
-    if (artifact !== a || a.tab !== 'code' || !r || r.error || r.ver === a.ver) return;
-    if (a.draft == null) renderArtifact();
-    else textBar(a, 'Ha cambiado fuera de aquí. Descarta para ver la versión nueva.', 'err');
+
+// ----- Vigilancia: los archivos abiertos se recargan al cambiar fuera -----
+let watching = '';
+function syncWatch() {
+  const list = [];
+  const add = (p) => { for (const x of p?.items || []) if (x.kind === 'file' && !list.some((f) => sameFile(f, x.path))) list.push(x.path); };
+  add(panels.get(shownConv));
+  for (const [id, p] of panels) if (id !== shownConv) add(p);
+  const key = list.slice(0, 30).join('\n');
+  if (key === watching) return;
+  watching = key;
+  api.previewWatch(list.slice(0, 30));
+}
+api.onPreviewChanged((file) => {
+  for (const p of panels.values()) {
+    for (const it of p.items) {
+      if (it.kind !== 'file' || !sameFile(it.path, file)) continue;
+      if (it === artifact) refreshItem(it); else it.stale = true;
+    }
+  }
+});
+
+// ----- Contenido de cada pestaña: un panel por vista (Vista, Código, Cambios), que se conserva al cambiar -----
+function renderBody(it) {
+  if (!it.body) {
+    it.body = document.createElement('div');
+    it.panes = {};
+    artEl.append(it.body);
+  }
+  it.body.hidden = it !== artifact;
+  const tabs = tabsOf(it);
+  if (!tabs.includes(it.tab)) it.tab = tabs[0];
+  const tab = it.tab;
+  it.body.className = `artifact-body is-${tab === 'view' ? (it.kind === 'url' || it.kind === 'html' || it.kind === 'file' ? 'html' : it.kind === 'conv' ? 'markdown' : it.kind) : tab}`;
+  if (!it.panes[tab]) {
+    const pane = document.createElement('div');
+    pane.className = `art-pane pane-${tab}`;
+    it.panes[tab] = pane;
+    it.body.append(pane);
+    fillPane(it, tab, pane);
+  }
+  for (const [k, el] of Object.entries(it.panes)) el.hidden = k !== tab;
+  if (tab === 'code' && it.line && it.ed) revealLine(it);
+}
+// Volver a pintar la vista (un diagrama que ya está dibujado, la conversación al día…)
+function renderArtifact() {
+  const it = artifact;
+  if (!it?.panes?.view) return;
+  fillPane(it, 'view', it.panes.view);
+}
+const loadingHtml = (text = 'Abriendo…') => `<div class="art-loading"><span class="art-spin"></span>${esc(text)}</div>`;
+function fillPane(it, tab, pane) {
+  if (tab === 'code') { if (it.kind === 'file') mountEditor(it, pane); else mountReadOnly(it, pane); return; }
+  if (tab === 'diff') { mountDiff(it, pane); return; }
+  const { kind, text } = it;
+  if (kind === 'conv') { renderConvPane(it, pane); return; }
+  if (kind === 'file') {
+    // Documento local: lo sirve docview.mjs (convertido si es Word, Excel o PowerPoint)
+    pane.innerHTML = loadingHtml();
+    api.previewFile(it.path, state.convs.get(it.convId)?.cwd).then((url) => {
+      if (!pane.isConnected && it.closed) return;
+      if (!url) { pane.innerHTML = noteHtml(`No encuentro ${baseName(it.path)}: ¿se ha movido o borrado?`, it.path); return; }
+      const wv = document.createElement('webview');
+      wv.setAttribute('partition', 'vista-previa');
+      wv.setAttribute('src', url);
+      it.wv = wv;
+      pane.replaceChildren(wv);
+    }).catch(() => { pane.innerHTML = noteHtml(`No se ha podido abrir ${baseName(it.path)}`, it.path); });
+  } else if (kind === 'url') {
+    // Página viva de un servidor local: se actualiza ella sola; el título, el suyo
+    const wv = document.createElement('webview');
+    wv.setAttribute('partition', 'vista-previa');
+    wv.setAttribute('src', text);
+    wv.addEventListener('page-title-updated', (ev) => {
+      if (!ev.title) return;
+      it.title = ev.title;
+      if (it.convId === shownConv) { renderArtTabs(); if (it === artifact) renderHead(); }
+    });
+    it.wv = wv;
+    pane.replaceChildren(wv);
+  } else if (kind === 'html') {
+    const wv = document.createElement('webview');
+    wv.setAttribute('partition', 'vista-previa');
+    wv.setAttribute('src', `data:text/html;charset=utf-8,${encodeURIComponent(text.slice(0, 1500000))}`);
+    pane.replaceChildren(wv);
+  } else if (kind === 'markdown') {
+    pane.innerHTML = `<div class="md">${md(text)}</div>`;
+  } else {
+    const d = diagrams.get(it.dkey);
+    it.img = d?.img;
+    pane.innerHTML = d?.img ? `<img src="${d.img}" alt="${esc(it.title)}">`
+      : d?.error ? `<div class="preview-error">No se ha podido dibujar: ${esc(d.error)}</div>` : loadingHtml('Dibujando…');
+  }
+}
+const noteHtml = (text, file) => `<div class="art-note"><p>${esc(text)}</p>${file ? `<button type="button" class="btn" data-art="window">Abrir con su aplicación</button>` : ''}</div>`;
+// La conversación en el panel: si se estaba al final, sigue al final mientras Claude escribe
+function renderConvPane(it, pane) {
+  const c = state.convs.get(it.convId);
+  if (!c) return;
+  const first = !pane.childElementCount;
+  const atEnd = first || pane.scrollHeight - pane.scrollTop - pane.clientHeight < 60;
+  const top = pane.scrollTop;
+  it.text = conversationMarkdown(c);
+  it.title = c.title || ART.conv[0];
+  pane.innerHTML = c.messages.length ? `<div class="md">${c.messages.map((m) => md(messageMarkdown(m))).join('')}</div>` : loadingHtml('Aún no hay mensajes');
+  pane.scrollTop = atEnd ? pane.scrollHeight : top;
+  if (it.codeModel && it.codeModel.getValue() !== it.text) it.codeModel.setValue(it.text);
+}
+let convArtTimer = null;
+function refreshConvArtifact(convId) {
+  if (artifact?.kind !== 'conv' || artifact.convId !== convId || convArtTimer) return;
+  convArtTimer = setTimeout(() => {
+    convArtTimer = null;
+    if (artifact?.kind !== 'conv' || artifact.convId !== convId || !artifact.panes?.view) return;
+    renderConvPane(artifact, artifact.panes.view);
+    renderArtTabs();
+    renderHead();
+  }, 700);
+}
+
+// ----- Editor (Monaco) -----
+const editorError = (pane, err) => { pane.innerHTML = `<div class="art-note"><p>No se ha podido cargar el editor: ${esc(err?.message || err)}</p></div>`; };
+let wrapLines = false;
+try { wrapLines = localStorage.getItem('artWrap') === '1'; } catch {}
+async function loadModel(it) {
+  if (it.model) return null;
+  let r;
+  try { [r] = await Promise.all([api.previewReadText(it.path), Code.load()]); } catch (err) { return { error: `No se ha podido cargar el editor: ${err.message}` }; }
+  if (it.closed) return { error: '' };
+  if (it.model) return null;
+  if (r?.error) return r;
+  it.model = Code.model(r.text, it.path);
+  it.ver = r.ver;
+  it.readOnly = r.readOnly || '';
+  it.saved = it.model.getAlternativeVersionId();
+  it.model.onDidChangeContent(() => {
+    const dirty = it.model.getAlternativeVersionId() !== it.saved;
+    if (dirty === !!it.dirty) return;
+    it.dirty = dirty;
+    if (dirty) it.auto = false; // ya es suyo: lo que abra Claude entrará detrás
+    if (it.convId === shownConv) { renderArtTabs(); if (it === artifact) renderHead(); }
+  });
+  return null;
+}
+async function mountEditor(it, pane) {
+  pane.innerHTML = loadingHtml();
+  const err = await loadModel(it);
+  if (it.closed || !pane.isConnected) return;
+  if (err) {
+    pane.innerHTML = noteHtml(err.error || 'No se ha podido abrir', err.binary || err.big ? it.path : null);
     return;
   }
-  const wv = a?.wv;
-  if (!wv?.isConnected) return;
+  pane.replaceChildren();
+  it.ed = Code.editor(pane, { model: it.model, readOnly: !!it.readOnly, wordWrap: wrapLines ? 'on' : 'off', minimap: { enabled: artEl.offsetWidth > 900, renderCharacters: false, showSlider: 'mouseover' } });
+  editorKeys(it, it.ed);
+  if (it.line) revealLine(it);
+  if (it === artifact) renderHead();
+}
+function revealLine(it) {
+  const n = Math.min(it.line, it.model.getLineCount());
+  it.line = null;
+  it.ed.revealLineInCenter(n);
+  it.ed.setPosition({ lineNumber: n, column: 1 });
+}
+function editorKeys(it, ed) {
+  const { KeyMod, KeyCode } = monaco;
+  ed.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => saveItem(it));
+  ed.addCommand(KeyMod.CtrlCmd | KeyCode.KeyP, () => openQuick());
+  ed.addCommand(KeyMod.CtrlCmd | KeyCode.KeyW, () => closeItem(it));
+  ed.addAction({
+    id: 'ca.wrap', label: 'Ajustar las líneas largas', keybindings: [KeyMod.Alt | KeyCode.KeyZ],
+    run: () => {
+      wrapLines = !wrapLines;
+      try { localStorage.setItem('artWrap', wrapLines ? '1' : '0'); } catch {}
+      for (const p of panels.values()) for (const x of p.items) x.ed?.updateOptions({ wordWrap: wrapLines ? 'on' : 'off' });
+    },
+  });
+  if (it.kind === 'file') {
+    ed.addAction({
+      id: 'ca.chat', label: 'Añadir al chat', contextMenuGroupId: 'navigation', contextMenuOrder: 0, keybindings: [KeyMod.CtrlCmd | KeyCode.KeyL],
+      run: () => mentionInChat(it, ed),
+    });
+  }
+}
+// Ctrl+L o el menú: «@archivo (líneas 10-20)» en el cuadro de texto, como al mencionar un archivo en Claude Code
+function mentionInChat(it, ed) {
+  const c = state.convs.get(it.convId);
+  let ref = it.path;
+  if (c?.cwd && (IS_WIN ? ref.toLowerCase() : ref).startsWith(IS_WIN ? `${c.cwd.toLowerCase()}\\` : `${c.cwd}/`)) ref = ref.slice(c.cwd.length + 1).replace(/\\/g, '/');
+  if (/\s/.test(ref)) ref = `"${ref}"`;
+  const sel = ed.getSelection();
+  const lines = sel && !sel.isEmpty() ? (sel.startLineNumber === sel.endLineNumber || (sel.endColumn === 1 && sel.endLineNumber === sel.startLineNumber + 1)
+    ? ` (línea ${sel.startLineNumber})` : ` (líneas ${sel.startLineNumber}-${sel.endColumn === 1 ? sel.endLineNumber - 1 : sel.endLineNumber})`) : '';
+  const text = `@${ref}${lines} `;
+  const at = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, at);
+  input.value = before + (before && !/\s$/.test(before) ? ' ' : '') + text + input.value.slice(input.selectionEnd ?? at);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.focus();
+}
+// Vista de solo lectura del código de un artefacto del chat (HTML, SVG, diagrama, Markdown, la conversación)
+async function mountReadOnly(it, pane) {
+  pane.innerHTML = loadingHtml();
+  try { await Code.load(); } catch (err) { editorError(pane, err); return; }
+  if (it.closed || !pane.isConnected) return;
+  pane.replaceChildren();
+  it.codeModel = monaco.editor.createModel(it.kind === 'conv' ? conversationMarkdown(state.convs.get(it.convId) || { messages: [] }) : it.text, ART[it.kind]?.[2] || 'plaintext');
+  it.codeEd = Code.editor(pane, { model: it.codeModel, readOnly: true, wordWrap: it.kind === 'conv' || it.kind === 'markdown' ? 'on' : wrapLines ? 'on' : 'off' });
+  editorKeys(it, it.codeEd);
+}
+// Cambios: lo de antes de la sesión (la copia de file-history de Claude Code) contra lo de ahora, editable
+async function mountDiff(it, pane) {
+  pane.innerHTML = loadingHtml('Buscando los cambios…');
+  const [err, base] = await Promise.all([loadModel(it), api.previewBase(it.convId, it.path).catch(() => null)]);
+  if (it.closed || !pane.isConnected) return;
+  if (err) { pane.innerHTML = noteHtml(err.error || 'No se ha podido abrir'); return; }
+  if (!base) {
+    pane.innerHTML = '<div class="art-note"><p>No hay copia de cómo estaba antes.</p><p class="sub">Claude Code la guarda cuando edita con sus herramientas (Edit, Write); los cambios hechos con comandos no la tienen.</p></div>';
+    return;
+  }
+  it.baseModel = Code.model(base.created ? '' : base.text, it.path);
+  pane.replaceChildren();
+  const d = Code.diff(pane, { readOnly: !!it.readOnly });
+  d.setModel({ original: it.baseModel, modified: it.model });
+  it.diffEd = d;
+  d.onDidUpdateDiff(() => {
+    let add = 0;
+    let del = 0;
+    for (const ch of d.getLineChanges() || []) {
+      if (ch.modifiedEndLineNumber >= ch.modifiedStartLineNumber && ch.modifiedEndLineNumber > 0) add += ch.modifiedEndLineNumber - ch.modifiedStartLineNumber + 1;
+      if (ch.originalEndLineNumber >= ch.originalStartLineNumber && ch.originalEndLineNumber > 0) del += ch.originalEndLineNumber - ch.originalStartLineNumber + 1;
+    }
+    it.diffStat = { add, del, created: !!base.created };
+    if (it === artifact) renderHead();
+  });
+  editorKeys(it, d.getModifiedEditor());
+}
+// Guardar (Ctrl+S). force: aunque haya cambiado fuera
+async function saveItem(it, force = false) {
+  if (!it.model || it.readOnly || it.saving || (!it.dirty && !force)) return;
+  const alt = it.model.getAlternativeVersionId();
+  it.saving = true;
+  setArtStatus(it, 'Guardando…');
+  const r = await api.previewSaveText(it.path, it.model.getValue(), it.ver, force).catch((err) => ({ error: err.message }));
+  it.saving = false;
+  if (!r?.ok) {
+    it.conflict = !!r?.changed;
+    setArtStatus(it, r?.error || 'No se ha podido guardar', 'err');
+    return;
+  }
+  it.ver = r.ver;
+  it.saved = alt;
+  it.conflict = false;
+  it.dirty = it.model.getAlternativeVersionId() !== alt;
+  setArtStatus(it, 'Guardado', 'ok', 1500);
+  if (it.convId === shownConv) renderArtTabs();
+}
+function setArtStatus(it, text, kind = '', ms = 0) {
+  it.status = text ? { text, kind } : null;
+  clearTimeout(it.statusTimer);
+  if (ms) it.statusTimer = setTimeout(() => { if (it.status?.text === text) { it.status = null; if (it === artifact) renderHead(); } }, ms);
+  if (it === artifact) renderHead();
+}
+// Ha cambiado fuera (Claude, otro programa): el editor se pone al día sin perder por dónde se iba ni el
+// deshacer; con cambios sin guardar, avisa. La vista se recarga
+async function refreshItem(it) {
+  it.stale = false;
+  if (it.kind !== 'file') return;
+  if (it.model) {
+    const r = await api.previewReadText(it.path).catch(() => null);
+    if (it.closed || !it.model || !r || r.error || r.ver === it.ver) { /* nada */ } else if (r.text === it.model.getValue()) it.ver = r.ver;
+    else if (it.dirty) { it.conflict = true; setArtStatus(it, 'Ha cambiado fuera de aquí', 'err'); } else {
+      const view = it.ed?.saveViewState();
+      it.model.pushEditOperations([], [{ range: it.model.getFullModelRange(), text: r.text }], () => null);
+      it.ver = r.ver;
+      it.saved = it.model.getAlternativeVersionId();
+      it.dirty = false;
+      if (view) it.ed.restoreViewState(view);
+      setArtStatus(it, 'Actualizado', 'ok', 1500);
+    }
+  }
+  reloadWebview(it);
+}
+// Volver a leerlo del disco, descartando lo que no se ha guardado
+async function revertItem(it) {
+  const r = await api.previewReadText(it.path).catch(() => null);
+  if (!r || r.error || !it.model) { setArtStatus(it, r?.error || 'No se ha podido leer', 'err'); return; }
+  it.model.pushEditOperations([], [{ range: it.model.getFullModelRange(), text: r.text }], () => null);
+  it.ver = r.ver;
+  it.saved = it.model.getAlternativeVersionId();
+  it.dirty = false;
+  it.conflict = false;
+  setArtStatus(it, null);
+  if (it.convId === shownConv) renderArtTabs();
+}
+// Recargar la vista sin perder por dónde se iba (en las hojas de cálculo, el desplazamiento es de la cuadrícula)
+const SCROLLER = "(document.querySelector('.grid') || document.scrollingElement)";
+async function reloadWebview(it) {
+  const wv = it.wv;
+  if (it.kind !== 'file' || !wv?.isConnected) return;
   // Con cambios sin guardar en la vista, no se pisan (avisa ella); lo recién guardado desde ella ya se ve
   let ed = '';
   try { ed = await wv.executeJavaScript('window.__editor?.estado?.() || ""'); } catch {}
@@ -422,10 +769,175 @@ async function reloadFileArtifact() {
   }
   wv.reloadIgnoringCache();
 }
-api.onPreviewChanged((file) => { if (artifact?.kind === 'file' && artifact.path === file) reloadFileArtifact(); });
-// Documentos abiertos a mano en el panel: quedan vinculados a la conversación (config.docLinks, por id de
+// Cambios sin guardar: en el editor o en la vista (Word, Excel, PDF se editan en ella)
+async function artDirty(it = artifact) {
+  if (!it) return false;
+  if (it.dirty) return true;
+  if (!it.wv?.isConnected || it.kind !== 'file') return false;
+  try { return (await it.wv.executeJavaScript('window.__editor?.estado?.() || ""')) === 'sucio'; } catch { return false; }
+}
+// Cerrar con cambios sin guardar: hay que pulsarlo dos veces
+async function confirmDiscard(it = artifact) {
+  if (!(await artDirty(it))) return true;
+  if (Date.now() - (it.discardArmed || 0) < 6000) return true;
+  it.discardArmed = Date.now();
+  toast(`${it.title} tiene cambios sin guardar: vuelve a pulsar para descartarlos`);
+  return false;
+}
+async function closeItem(it) {
+  if (!(await confirmDiscard(it))) return;
+  const p = panels.get(it.convId);
+  const i = p?.items.indexOf(it) ?? -1;
+  if (i < 0) return;
+  if (it.kind === 'file') {
+    p.dismissed.add(it.key); // no vuelve a abrirse solo
+    api.noteOpened(it.convId, [it.path], false).catch(() => {});
+  }
+  p.items.splice(i, 1);
+  disposeItem(it);
+  if (p.active === it) p.active = [...p.items].sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0))[0] || null;
+  if (it.convId === shownConv) showPanel(it.convId);
+}
+// Botón de la barra de título (Ctrl+Shift+F) y la X del panel: ocultarlo lo deja tal cual (pestañas, borradores)
+// y, mientras esté oculto, lo nuevo de Claude no lo abre (lo cuenta el botón del compositor)
+function hidePanel(convId = state.activeId) {
+  const p = panels.get(convId);
+  if (!p) return;
+  p.hidden = true;
+  p.empty = false;
+  showPanel(convId);
+}
+async function togglePanel() {
+  const c = current();
+  if (!c || c.picker) return;
+  if (!artEl.hidden) { hidePanel(c.id); return; }
+  const p = panelOf(c.id);
+  const fresh = [...p.unseen]; // los nuevos de Claude mientras estaba oculto: se abren, a la vista el último
+  p.hidden = false;
+  if (fresh.length) {
+    let last = null;
+    for (const key of fresh) { const f = (c.files || []).find((x) => fileKey(x.path) === key); if (f) last = openItem(c.id, fileItem(f.path), { focus: false, auto: true }); }
+    if (last) { p.active = last; last.unseen = false; }
+  } else if (!p.items.length) {
+    const docs = sessionDocs(c);
+    if (docs.length === 1) { openFile(docs[0].path, {}, c.id); return; }
+    p.empty = true;
+  }
+  showPanel(c.id);
+  if (p.empty) openQuick();
+}
+
+// ----- Pestañas del panel -----
+const EXT_KIND = [
+  [/^(docx?|odt|rtf|md|markdown|txt|pdf)$/, 'doc'], [/^(xlsx|xlsm|xls|ods|csv|tsv)$/, 'sheet'], [/^(pptx?|odp)$/, 'slide'],
+  [/^(html?|css|scss|less|svg|vue|svelte)$/, 'web'], [/^(png|jpe?g|gif|webp|bmp|ico)$/, 'img'], [/^(json|ya?ml|toml|ini|xml|env|lock|conf|cfg)$/, 'data'],
+];
+const extOf = (f) => /\.([^.\\/]+)$/.exec(f)?.[1].toLowerCase() || '';
+function tabIcon(it) {
+  if (it.kind === 'file') {
+    const ext = extOf(it.path);
+    const k = EXT_KIND.find(([re]) => re.test(ext))?.[1] || 'code';
+    return `<span class="art-ext" data-k="${k}">${esc((ext || '·').slice(0, 4))}</span>`;
+  }
+  return `<span class="art-ico">${it.kind === 'url' || it.kind === 'html' ? I.globe : it.kind === 'conv' ? I.chat : it.kind === 'markdown' ? I.file : I.panel}</span>`;
+}
+function renderArtTabs() {
+  const p = panels.get(shownConv);
+  artStrip.innerHTML = (p?.items || []).map((it) => `<div class="art-tab${it === artifact ? ' on' : ''}${it.unseen ? ' unseen' : ''}${it.dirty ? ' dirty' : ''}${it.auto ? ' auto' : ''}" data-id="${it.id}" role="tab" aria-selected="${it === artifact}" title="${esc(it.kind === 'file' ? it.path : it.title)}">`
+    + `${tabIcon(it)}<span class="art-tab-name">${esc(it.title)}</span>`
+    + `<button type="button" class="art-tab-x" data-x tabindex="-1" title="Cerrar">${I.x}</button></div>`).join('');
+  artStrip.querySelector('.art-tab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+artStrip.addEventListener('click', (e) => {
+  const tab = e.target.closest('.art-tab');
+  const p = panels.get(shownConv);
+  const it = p?.items.find((x) => x.id === Number(tab?.dataset.id));
+  if (!it) return;
+  if (e.target.closest('[data-x]')) { closeItem(it); return; }
+  if (p.active === it) return;
+  p.active = it;
+  showPanel(shownConv);
+});
+artStrip.addEventListener('auxclick', (e) => {
+  if (e.button !== 1) return;
+  const it = panels.get(shownConv)?.items.find((x) => x.id === Number(e.target.closest('.art-tab')?.dataset.id));
+  if (it) { e.preventDefault(); closeItem(it); }
+});
+artStrip.addEventListener('wheel', (e) => { if (e.deltaY && !e.deltaX) { artStrip.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
+// Cabecera: ruta, estado, Vista / Código / Cambios y acciones
+function renderHead() {
+  const it = artifact;
+  if (!it) return;
+  const file = it.kind === 'file';
+  const c = state.convs.get(it.convId);
+  const crumb = artHead.querySelector('.art-crumb');
+  if (file) {
+    let dir = it.path.slice(0, -baseName(it.path).length - 1);
+    if (c?.cwd && sameFile(dir.slice(0, c.cwd.length), c.cwd) && /^([\\/]|$)/.test(dir.slice(c.cwd.length))) dir = dir.slice(c.cwd.length + 1);
+    else dir = shortPath(dir);
+    crumb.innerHTML = `${dir ? `<span class="art-crumb-dir"><bdi>${esc(dir.replace(/\\/g, '/'))}/</bdi></span>` : ''}<span class="art-crumb-name">${esc(baseName(it.path))}</span>`;
+    crumb.title = `${it.path}\nPulsa para copiar la ruta`;
+  } else {
+    crumb.innerHTML = `<span class="art-crumb-name">${esc(it.title)}</span>`;
+    crumb.title = it.kind === 'url' ? it.text : it.title;
+  }
+  const tabs = tabsOf(it);
+  const seg = artHead.querySelector('.artifact-tabs');
+  seg.hidden = tabs.length < 2;
+  seg.innerHTML = tabs.map((t) => `<button type="button" data-art="${t}" role="tab" class="${t === it.tab ? 'on' : ''}">${TAB_NAMES[t]}`
+    + (t === 'diff' && it.diffStat && !it.diffStat.created ? ` <span class="art-stat"><b class="add">+${it.diffStat.add}</b> <b class="del">−${it.diffStat.del}</b></span>` : '')
+    + (t === 'diff' && it.diffStat?.created ? ' <span class="art-stat"><b class="add">nuevo</b></span>' : '') + '</button>').join('');
+  const st = artHead.querySelector('.art-status');
+  const s = it.status || (it.dirty ? { text: `Sin guardar · ${K('Ctrl+S')}` } : it.readOnly && it.tab !== 'view' ? { text: it.readOnly } : null);
+  st.className = `art-status${s?.kind ? ` ${s.kind}` : ''}${it.dirty && !it.status ? ' dirty' : ''}`;
+  st.innerHTML = s ? `<span>${esc(s.text)}</span>${it.conflict ? '<button type="button" data-art="revert">Recargar</button><button type="button" data-art="force">Sobrescribir</button>' : ''}` : '';
+  const win = artHead.querySelector('[data-art="window"]');
+  win.hidden = it.kind !== 'html' && it.kind !== 'url' && !file;
+  win.title = it.kind === 'url' ? 'Abrir en el navegador' : file ? 'Abrir con su aplicación' : 'Abrir en una ventana';
+  artHead.querySelector('[data-art="save"]').hidden = it.kind === 'url' || file;
+  artHead.querySelector('[data-art="folder"]').hidden = !file;
+  artHead.querySelector('[data-art="copy"]').title = it.kind === 'url' ? 'Copiar la dirección' : file ? 'Copiar la ruta' : 'Copiar';
+  artEl.querySelector('[data-art="wide"]').title = artEl.classList.contains('wide') ? 'Volver al chat' : 'Ampliar sobre el chat';
+}
+artEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-art]');
+  if (!btn || btn.closest('.art-quick')) return;
+  const a = btn.dataset.art;
+  const it = artifact;
+  const p = panels.get(shownConv);
+  if (a === 'close') { hidePanel(shownConv); return; }
+  if (a === 'quick') { openQuick(); return; }
+  if (a === 'wide') {
+    if (!p) return;
+    p.wide = !p.wide;
+    artEl.classList.toggle('wide', p.wide);
+    btn.title = p.wide ? 'Volver al chat' : 'Ampliar sobre el chat';
+    return;
+  }
+  if (!it) return;
+  if (a === 'view' || a === 'code' || a === 'diff') { if (it.tab !== a) { it.tab = a; renderBody(it); renderHead(); } }
+  else if (a === 'window') { if (it.kind === 'file') api.openPath(it.path); else if (it.kind === 'url') window.open(it.text); else api.previewHtml(it.text); } // window.open → navegador
+  else if (a === 'folder') api.showInFolder(it.path);
+  else if (a === 'copy') { navigator.clipboard.writeText(it.text); flashCopied(btn); }
+  else if (a === 'revert') revertItem(it);
+  else if (a === 'force') saveItem(it, true);
+  else if (a === 'save') {
+    const name = `${it.title.replace(/[\\/:*?"<>|]+/g, '').trim().slice(0, 60) || 'artefacto'}.${ART[it.kind][1]}`;
+    const f = await api.exportChat({ name, text: it.kind === 'conv' ? conversationMarkdown(state.convs.get(it.convId)) : it.text, cwd: current()?.cwd, title: 'Guardar el artefacto' });
+    if (f) toast(`Guardado en ${shortPath(f)}`);
+  }
+});
+artHead.querySelector('.art-crumb').addEventListener('click', (e) => {
+  const it = artifact;
+  if (!it) return;
+  navigator.clipboard.writeText(it.kind === 'file' ? it.path : it.kind === 'url' ? it.text : it.title);
+  toast(it.kind === 'file' ? 'Ruta copiada' : 'Copiado');
+  e.currentTarget.blur();
+});
+
+// ----- Buscador (Ctrl+P o +): lo de la conversación, lo vinculado y cualquier archivo de su carpeta -----
+// Documentos abiertos a mano con el diálogo: quedan vinculados a la conversación (config.docLinks, por id de
 // sesión; antes de la primera respuesta aún no la hay y van con el de la pestaña)
-const sameFile = (a, b) => (IS_WIN ? String(a).toLowerCase() === String(b).toLowerCase() : a === b);
 const docLinks = (c) => (c && (state.config?.docLinks?.[c.sessionId] || state.config?.docLinks?.[c.id])) || [];
 async function setDocLinks(c, paths) {
   const all = { ...(state.config.docLinks || {}) };
@@ -440,7 +952,7 @@ async function setDocLinks(c, paths) {
 // Los que Claude ha tocado en la sesión (los más recientes primero) y, detrás, los vinculados
 function sessionDocs(c) {
   const links = docLinks(c);
-  const out = (c?.files || []).map((f) => ({ path: f.path, at: f.at, linked: links.some((p) => sameFile(p, f.path)) }));
+  const out = (c?.files || []).map((f) => ({ ...f, linked: links.some((p) => sameFile(p, f.path)) }));
   for (const p of links) if (!out.some((f) => sameFile(f.path, p))) out.push({ path: p, linked: true });
   return out;
 }
@@ -448,258 +960,183 @@ async function linkDocs(c) {
   const picked = await api.pickDocs(c.cwd).catch(() => []);
   if (!picked.length || !state.convs.has(c.id)) return;
   await setDocLinks(c, [...picked, ...docLinks(c).filter((p) => !picked.some((q) => sameFile(p, q)))]);
-  api.noteOpened(c.id, picked, true).catch(() => {}); // Claude lo sabrá con el siguiente mensaje
-  if (c.id === state.activeId) openFileArtifact(picked[0], c.id);
+  for (const f of picked.slice(0, 5).reverse()) openFile(f, {}, c.id);
   renderDocsButton();
 }
 async function unlinkDoc(c, file) {
   await setDocLinks(c, docLinks(c).filter((p) => !sameFile(p, file)));
   api.noteOpened(c.id, [file], false).catch(() => {});
-  if (!artFiles.hidden) toggleFileList(true);
+  if (!artQuick.hidden) renderQuick();
   renderDocsButton();
 }
-// La conversación misma, como documento (lo que exporta /export), al día mientras Claude escribe
-function openConvArtifact(convId = state.activeId) {
-  const c = state.convs.get(convId);
-  showArtifact({ convId, kind: 'conv', text: '', title: c?.title || ART.conv[0], tab: 'view' });
+const repoFiles = new Map(); // cwd -> { at, files, more, loading }
+function repoList(cwd) {
+  if (!cwd) return null;
+  let r = repoFiles.get(cwd);
+  if (!r || (Date.now() - r.at > 20000 && !r.loading)) {
+    r = { at: Date.now(), files: r?.files || [], more: r?.more, loading: true };
+    repoFiles.set(cwd, r);
+    api.listFiles(cwd).then((res) => {
+      r.files = res?.files || [];
+      r.more = res?.more;
+    }).catch(() => {}).finally(() => { r.loading = false; r.at = Date.now(); if (!artQuick.hidden) renderQuick(); });
+  }
+  return r;
 }
-let convArtTimer = null;
-function refreshConvArtifact(convId) {
-  if (artifact?.kind !== 'conv' || artifact.convId !== convId || convArtTimer) return;
-  convArtTimer = setTimeout(() => { convArtTimer = null; if (artifact?.kind === 'conv' && artifact.convId === convId) renderArtifact(); }, 700);
+// Búsqueda difusa (las letras en orden): puntúan las seguidas, los inicios de palabra y el nombre del archivo
+function fuzzy(q, s) {
+  const t = s.toLowerCase();
+  const nameAt = Math.max(t.lastIndexOf('/'), t.lastIndexOf('\\')) + 1;
+  let score = 0;
+  let from = 0;
+  let prev = -2;
+  const hits = [];
+  for (const ch of q) {
+    const i = t.indexOf(ch, from);
+    if (i < 0) return null;
+    score += 1 + (i === prev + 1 ? 3 : 0) + (i === 0 || /[\\/._\-\s]/.test(t[i - 1]) ? 2 : 0) + (i >= nameAt ? 1 : 0);
+    hits.push(i);
+    prev = i;
+    from = i + 1;
+  }
+  const inName = t.indexOf(q, nameAt);
+  if (inName >= 0) {
+    score += 12 + (inName === nameAt ? 6 : 0);
+    hits.length = 0;
+    for (let i = 0; i < q.length; i++) hits.push(inName + i);
+  }
+  return { score: score - t.length * 0.02, hits };
 }
-// Botón de la barra de título (Ctrl+Shift+F): ocultar deja el panel tal cual (documento, borrador, desplazamiento)
-async function togglePanel() {
+const quick = { sel: 0, rows: [] };
+function openQuick() {
   const c = current();
   if (!c || c.picker) return;
-  if (artifact) {
-    artHidden.add(c.id);
-    stashArtifact();
-    renderDocsButton();
-    return;
+  if (artEl.hidden) {
+    const p = panelOf(c.id);
+    p.hidden = false;
+    if (!p.items.length) p.empty = true;
+    showPanel(c.id);
   }
-  artHidden.delete(c.id);
-  if (artSaved.has(c.id)) { unstashArtifact(c.id); renderDocsButton(); return; }
-  const f = sessionDocs(c)[0];
-  if (f) await openFileArtifact(f.path, c.id); else openConvArtifact(c.id);
-  if (artifact?.convId === c.id) toggleFileList(true);
+  artQuick.hidden = false;
+  const inp = artQuick.querySelector('input');
+  inp.value = '';
+  quick.sel = 0;
+  repoList(c.cwd);
+  renderQuick();
+  inp.focus();
 }
-// Lista de los documentos de la conversación (al pulsar el título del panel)
-const artFiles = artEl.querySelector('.artifact-files');
-const filesConv = () => current();
-function toggleFileList(show = artFiles.hidden) {
-  const c = filesConv();
-  if (!show || !c || !artifact) { artFiles.hidden = true; return; }
-  const docs = sessionDocs(c);
-  const n = c.messages?.length || 0;
-  artFiles.innerHTML = `<button type="button" class="art-file art-conv${artifact.kind === 'conv' ? ' on' : ''}" data-conv>`
-    + `<span class="art-file-name">${I.chat}Conversación</span><span class="art-file-dir">${esc(c.title || 'Esta pestaña')}</span>`
-    + `<span class="art-file-at">${n} ${n === 1 ? 'mensaje' : 'mensajes'}</span></button>`
-    + (docs.length ? '<div class="art-sep"></div>' : '')
-    + docs.map((f) => `<div class="art-row${f.linked ? ' linked' : ''}"><button type="button" class="art-file${artifact.kind === 'file' && sameFile(artifact.path, f.path) ? ' on' : ''}" data-path="${esc(f.path)}" title="${esc(f.path)}">`
-      + `<span class="art-file-name">${esc(baseName(f.path))}</span><span class="art-file-dir">${esc(shortPath(f.path.slice(0, -baseName(f.path).length - 1)))}</span>`
-      + `<span class="art-file-at">${f.at ? esc(agoText(f.at)) : 'Vinculado'}</span></button>`
-      + (f.linked ? `<button type="button" class="icon-btn xs art-unlink" data-unlink="${esc(f.path)}" title="Quitar de esta conversación (el archivo no se borra)">${I.x}</button>` : '')
-      + '</div>').join('')
-    + `<div class="art-sep"></div><button type="button" class="art-file art-open" data-open><span class="art-file-name">${I.plus}Abrir otro archivo…</span>`
-    + '<span class="art-file-dir">Word, Excel, PDF, Markdown, HTML, imágenes… Queda vinculado a esta conversación</span></button>';
-  artFiles.hidden = false;
+function closeQuick() {
+  if (artQuick.hidden) return;
+  artQuick.hidden = true;
+  const p = panels.get(shownConv);
+  if (p?.empty && !p.items.length) hidePanel(shownConv); // no hay nada que enseñar
 }
-artFiles.addEventListener('click', async (e) => {
-  const c = filesConv();
-  const b = e.target.closest('[data-path], [data-conv], [data-open], [data-unlink]');
-  if (!b || !c) return;
-  if (b.dataset.unlink) { unlinkDoc(c, b.dataset.unlink); return; }
-  artFiles.hidden = true;
-  if (b.dataset.path) openFileArtifact(b.dataset.path, c.id);
-  else if ('open' in b.dataset) linkDocs(c);
-  else if (artifact?.kind !== 'conv' && await confirmDiscard()) openConvArtifact(c.id);
+function joinCwd(cwd, rel) { return IS_WIN ? `${cwd.replace(/[\\/]+$/, '')}\\${rel.replace(/\//g, '\\')}` : `${cwd.replace(/\/+$/, '')}/${rel}`; }
+function relOf(cwd, file) {
+  if (!cwd) return file;
+  const pre = cwd.replace(/[\\/]+$/, '');
+  return sameFile(file.slice(0, pre.length), pre) && /^[\\/]/.test(file.slice(pre.length)) ? file.slice(pre.length + 1).replace(/\\/g, '/') : file;
+}
+function renderQuick() {
+  const c = current();
+  if (!c) return;
+  const q = artQuick.querySelector('input').value.trim().toLowerCase().replace(/\s+/g, '');
+  const session = sessionDocs(c);
+  const rows = [];
+  const seen = new Set();
+  const push = (r) => { const k = r.path ? fileKey(r.path) : r.kind; if (!seen.has(k)) { seen.add(k); rows.push(r); } };
+  if (!q) {
+    push({ kind: 'conv', sec: 'Esta conversación' });
+    for (const f of session.filter((x) => !x.linked || x.at)) push({ ...f, sec: 'Esta conversación' });
+    for (const f of session.filter((x) => x.linked && !x.at)) push({ ...f, sec: 'Vinculados' });
+  } else {
+    const cands = [...session.map((f) => ({ ...f, rel: relOf(c.cwd, f.path), boost: 4 }))];
+    const repo = repoList(c.cwd);
+    for (const rel of repo?.files || []) cands.push({ path: joinCwd(c.cwd, rel), rel, boost: 0 });
+    const found = [];
+    for (const f of cands) {
+      const m = fuzzy(q, f.rel);
+      if (m) found.push({ ...f, hits: m.hits, score: m.score + f.boost });
+    }
+    if (fuzzy(q, 'conversación')) found.push({ kind: 'conv', score: 1 });
+    found.sort((a, b) => b.score - a.score);
+    for (const f of found.slice(0, 80)) push(f);
+    if (repo?.loading && !repo.files.length) rows.push({ kind: 'wait' });
+  }
+  rows.push({ kind: 'pick', sec: rows.length ? '' : undefined });
+  quick.rows = rows;
+  quick.sel = Math.max(0, Math.min(quick.sel, rows.length - 1));
+  let sec = null;
+  artQuick.querySelector('.art-quick-list').innerHTML = rows.map((r, i) => {
+    let head = '';
+    if (r.sec !== undefined && r.sec !== sec) { sec = r.sec; head = r.sec ? `<div class="aq-sec">${esc(r.sec)}</div>` : '<div class="aq-sep"></div>'; }
+    const on = i === quick.sel ? ' on' : '';
+    if (r.kind === 'wait') return `<div class="aq-wait">${loadingHtml('Buscando en la carpeta…')}</div>`;
+    if (r.kind === 'conv') {
+      const n = c.messages?.length || 0;
+      return `${head}<button type="button" class="aq-row${on}" data-i="${i}"><span class="art-ico">${I.chat}</span><span class="aq-name">Conversación</span><span class="aq-dir"><bdi>${esc(c.title || 'Esta pestaña')}</bdi></span><span class="aq-meta">${n} ${n === 1 ? 'mensaje' : 'mensajes'}</span></button>`;
+    }
+    if (r.kind === 'pick') return `${head}<button type="button" class="aq-row aq-pick${on}" data-i="${i}"><span class="art-ico">${I.folder}</span><span class="aq-name">Abrir un archivo del equipo…</span><span class="aq-dir"><bdi>Queda vinculado a esta conversación</bdi></span></button>`;
+    const rel = r.rel || relOf(c.cwd, r.path);
+    const name = baseName(rel);
+    const nameAt = rel.length - name.length;
+    const hits = new Set((r.hits || []).filter((h) => h >= nameAt).map((h) => h - nameAt));
+    const nameHtml = hits.size ? [...name].map((ch, j) => (hits.has(j) ? `<mark>${esc(ch)}</mark>` : esc(ch))).join('') : esc(name);
+    const meta = r.at ? `${r.created ? '<b class="aq-new">nuevo</b>' : r.edit ? '<b class="aq-mod">editado</b>' : ''}${esc(agoText(r.at))}` : r.linked ? 'Vinculado' : '';
+    const open = panels.get(c.id)?.items.some((x) => x.key === fileKey(r.path));
+    return `${head}<div class="aq-wrap"><button type="button" class="aq-row${on}" data-i="${i}" title="${esc(r.path)}">${tabIcon({ kind: 'file', path: r.path })}`
+      + `<span class="aq-name">${nameHtml}${open ? '<i class="aq-open" title="Ya abierto"></i>' : ''}</span><span class="aq-dir"><bdi>${esc(rel.slice(0, nameAt).replace(/\/$/, '') || '')}</bdi></span><span class="aq-meta">${meta}</span></button>`
+      + (r.linked && !q ? `<button type="button" class="icon-btn xs aq-unlink" data-unlink="${esc(r.path)}" title="Quitar de esta conversación (el archivo no se borra)">${I.x}</button>` : '')
+      + '</div>';
+  }).join('');
+  artQuick.querySelector('.aq-row.on')?.scrollIntoView({ block: 'nearest' });
+}
+function pickQuick(i) {
+  const r = quick.rows[i];
+  const c = current();
+  if (!r || !c || r.kind === 'wait') return;
+  artQuick.hidden = true;
+  if (r.kind === 'conv') openConvArtifact(c.id);
+  else if (r.kind === 'pick') { linkDocs(c); closeQuick(); }
+  else openFile(r.path, { tab: r.edit && !r.created && !VIEW_EXT.test(r.path) && !NOT_TEXT.test(r.path) ? 'diff' : undefined }, c.id);
+}
+artQuick.querySelector('input').addEventListener('input', () => { quick.sel = 0; renderQuick(); });
+artQuick.querySelector('input').addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const n = quick.rows.length;
+    let i = quick.sel;
+    do i = (i + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; while (quick.rows[i]?.kind === 'wait' && i !== quick.sel);
+    quick.sel = i;
+    artQuick.querySelectorAll('.aq-row').forEach((b) => b.classList.toggle('on', Number(b.dataset.i) === i));
+    artQuick.querySelector('.aq-row.on')?.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') { e.preventDefault(); pickQuick(quick.sel); }
+  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeQuick(); }
 });
-document.addEventListener('pointerdown', (e) => { if (!artFiles.hidden && !e.target.closest('.artifact-files, .artifact-title')) artFiles.hidden = true; });
-function closeArtifact() {
-  if (artifact?.kind === 'file') {
-    if (!fileDismissed.has(artifact.convId)) fileDismissed.set(artifact.convId, new Set());
-    fileDismissed.get(artifact.convId).add(artifact.path);
-  }
-  artifact?.body?.remove(); // fuera el <webview> y su proceso
-  artifact = null;
-  artEl.hidden = true;
-  artEl.classList.remove('wide');
-  artFiles.hidden = true;
-  watchFile(null);
-  renderDocsButton();
-}
-// Botón del compositor para volver a abrir los documentos con el panel cerrado
+artQuick.addEventListener('click', (e) => {
+  const c = current();
+  const un = e.target.closest('[data-unlink]');
+  if (un && c) { unlinkDoc(c, un.dataset.unlink); return; }
+  const row = e.target.closest('.aq-row');
+  if (row) pickQuick(Number(row.dataset.i));
+});
+document.addEventListener('pointerdown', (e) => { if (!artQuick.hidden && !e.target.closest('.art-quick, [data-art="quick"]')) closeQuick(); });
+
+// Botón del compositor para volver a abrir el panel cuando está cerrado (con cuántos documentos nuevos hay)
 function renderDocsButton() {
   const c = current();
   const docs = sessionDocs(c);
-  const n = docs.length;
+  const fresh = (c && panels.get(c.id)?.unseen.size) || 0;
   const btn = $('#art-docs');
-  btn.hidden = !n || !artEl.hidden;
-  btn.title = n === 1 ? `Ver ${baseName(docs[0].path)}` : `Ver los documentos de esta conversación (${n})`;
+  btn.hidden = !docs.length || !artEl.hidden;
+  btn.classList.toggle('fresh', fresh > 0);
+  btn.dataset.n = fresh > 9 ? '9+' : fresh || '';
+  btn.title = fresh ? `${fresh === 1 ? 'Un documento nuevo' : `${fresh} documentos nuevos`} de Claude: pulsa para verlos`
+    : docs.length === 1 ? `Ver ${baseName(docs[0].path)}` : `Ver los archivos de esta conversación (${docs.length})`;
   const tog = $('#panel-toggle');
   tog.classList.toggle('on', !artEl.hidden);
   tog.disabled = !c || !!c.picker;
 }
-function renderArtifactHead() {
-  const { kind, tab } = artifact;
-  const file = kind === 'file';
-  const title = artEl.querySelector('.artifact-title');
-  title.textContent = artifact.title;
-  title.title = `${file ? `${artifact.path}\n` : ''}Pulsa para ver los documentos de la conversación o abrir otro`;
-  title.classList.add('pick');
-  artEl.querySelectorAll('.artifact-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.art === tab));
-  artEl.querySelector('[data-art="window"]').hidden = kind !== 'html' && kind !== 'url' && !file;
-  artEl.querySelector('[data-art="window"]').title = kind === 'url' ? 'Abrir en el navegador' : file ? 'Abrir con su aplicación' : 'Abrir en una ventana';
-  artEl.querySelector('.artifact-tabs').hidden = kind === 'url' || (file && !TEXT_DOC.test(artifact.path));
-  artEl.querySelector('.artifact-tabs [data-art="code"]').classList.toggle('dirty', artifact.draft != null);
-  artEl.querySelector('[data-art="save"]').hidden = kind === 'url' || file;
-  artEl.querySelector('[data-art="folder"]').hidden = !file;
-  artEl.querySelector('[data-art="copy"]').title = kind === 'url' ? 'Copiar la dirección' : file ? 'Copiar la ruta' : 'Copiar';
-  artEl.querySelector('[data-art="wide"]').title = artEl.classList.contains('wide') ? 'Volver al chat' : 'Ampliar sobre el chat';
-  renderDocsButton();
-  watchFile(file ? artifact.path : null);
-}
-function renderArtifact() {
-  if (!artifact) return;
-  const { kind, text, tab } = artifact;
-  const file = kind === 'file';
-  renderArtifactHead();
-  if (!artifact.body) { artifact.body = document.createElement('div'); artEl.append(artifact.body); }
-  const body = artifact.body;
-  body.className = `artifact-body ${tab === 'code' ? 'is-code' : `is-${kind === 'url' || file ? 'html' : kind}`}`;
-  if (tab === 'code' && file) { renderTextEditor(body); return; }
-  if (kind === 'conv') { renderConvBody(body); return; }
-  if (tab === 'code') { body.innerHTML = `<pre><code class="hljs">${highlight(text, ART[kind][2])}</code></pre>`; return; }
-  if (file) {
-    // Documento local: lo sirve docview.mjs (convertido si es Word, Excel o PowerPoint)
-    const own = artifact;
-    body.innerHTML = '<div class="preview-view loading">Abriendo…</div>';
-    const gone = () => own.body !== body || !body.isConnected; // cerrado o cambiado mientras (oculto en otra pestaña, sigue)
-    api.previewFile(own.path, state.convs.get(own.convId)?.cwd).then((url) => {
-      if (gone()) return;
-      if (!url) { body.innerHTML = `<div class="preview-error">No encuentro ${esc(own.path)}: ¿se ha movido o borrado?</div>`; return; }
-      const wv = document.createElement('webview');
-      wv.setAttribute('partition', 'vista-previa');
-      wv.setAttribute('src', url);
-      own.wv = wv;
-      body.replaceChildren(wv);
-    }).catch(() => { if (!gone()) body.innerHTML = `<div class="preview-error">No se ha podido abrir ${esc(own.path)}</div>`; });
-  } else if (kind === 'url') {
-    // Página viva de un servidor local: se actualiza ella sola; el título, el suyo
-    const wv = document.createElement('webview');
-    wv.setAttribute('partition', 'vista-previa');
-    wv.setAttribute('src', text);
-    const own = artifact;
-    wv.addEventListener('page-title-updated', (ev) => {
-      if (!ev.title) return;
-      own.title = ev.title;
-      if (artifact === own) artEl.querySelector('.artifact-title').textContent = ev.title;
-    });
-    body.replaceChildren(wv);
-  } else if (kind === 'html') {
-    const wv = document.createElement('webview');
-    wv.setAttribute('partition', 'vista-previa');
-    wv.setAttribute('src', `data:text/html;charset=utf-8,${encodeURIComponent(text.slice(0, 1500000))}`);
-    body.replaceChildren(wv);
-  } else if (kind === 'markdown') {
-    body.innerHTML = `<div class="md">${md(text)}</div>`;
-  } else {
-    const d = diagrams.get(artifact.key);
-    artifact.img = d?.img;
-    body.innerHTML = d?.img ? `<img src="${d.img}" alt="${esc(artifact.title)}">`
-      : d?.error ? `<div class="preview-error">No se ha podido dibujar: ${esc(d.error)}</div>` : '<div class="preview-view loading">Dibujando…</div>';
-  }
-}
-// La conversación en el panel: si se estaba al final, sigue al final mientras Claude escribe
-function renderConvBody(body) {
-  const c = state.convs.get(artifact.convId);
-  if (!c) return;
-  const first = !body.childElementCount;
-  const atEnd = first || body.scrollHeight - body.scrollTop - body.clientHeight < 60;
-  const top = body.scrollTop;
-  artifact.text = conversationMarkdown(c);
-  artifact.title = c.title || ART.conv[0];
-  artEl.querySelector('.artifact-title').textContent = artifact.title;
-  const code = artifact.tab === 'code';
-  body.className = `artifact-body ${code ? 'is-code' : 'is-markdown'}`;
-  body.innerHTML = code ? `<pre><code class="hljs">${highlight(artifact.text, 'markdown')}</code></pre>`
-    : c.messages.length ? `<div class="md">${c.messages.map((m) => md(messageMarkdown(m))).join('')}</div>` : '<div class="preview-view loading">Aún no hay mensajes</div>';
-  body.scrollTop = atEnd ? body.scrollHeight : top;
-}
-// Código de un documento de texto, editable: se guarda con Ctrl+S o el botón (el borrador sigue al cambiar a Vista)
-function renderTextEditor(body) {
-  const own = artifact;
-  body.className = 'artifact-body is-code is-edit';
-  body.innerHTML = '<textarea class="art-edit" spellcheck="false" aria-label="Código del documento"></textarea>'
-    + '<div class="art-edbar" hidden><span class="msg"></span><button type="button" data-ted="discard">Descartar</button><button type="button" class="pri" data-ted="save">Guardar</button></div>';
-  const ta = body.querySelector('textarea');
-  if (own.draft != null) { ta.value = own.draft; textBar(own, `Cambios sin guardar · ${K('Ctrl+S')}`); }
-  else {
-    ta.readOnly = true;
-    api.previewReadText(own.path).then((r) => {
-      if (own.body !== body || !body.contains(ta)) return;
-      if (r?.error) { body.innerHTML = `<div class="preview-error">${esc(r.error)}</div>`; return; }
-      ta.value = r.text;
-      own.ver = r.ver;
-      ta.readOnly = false;
-    });
-  }
-  ta.addEventListener('input', () => {
-    own.draft = ta.value;
-    textBar(own, `Cambios sin guardar · ${K('Ctrl+S')}`);
-  });
-  ta.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); saveTextDoc(own); }
-    else if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); document.execCommand('insertText', false, '  '); }
-  });
-  body.querySelector('.art-edbar').addEventListener('click', (e) => {
-    const b = e.target.closest('[data-ted]');
-    if (!b) return;
-    if (b.dataset.ted === 'save') saveTextDoc(own);
-    else { own.draft = null; if (artifact === own) { renderArtifactHead(); renderArtifact(); } }
-  });
-}
-function textBar(a, text, kind = '') {
-  const bar = a.body?.querySelector('.art-edbar');
-  if (artifact === a) artEl.querySelector('.artifact-tabs [data-art="code"]').classList.toggle('dirty', a.draft != null);
-  if (!bar) return;
-  bar.hidden = !text;
-  if (!text) return;
-  bar.querySelector('.msg').textContent = text;
-  bar.classList.toggle('err', kind === 'err');
-  bar.classList.toggle('ok', kind === 'ok');
-}
-async function saveTextDoc(a) {
-  if (a.draft == null || a.saving) return;
-  const sent = a.draft;
-  a.saving = true;
-  textBar(a, 'Guardando…');
-  const r = await api.previewSaveText(a.path, sent, a.ver).catch((err) => ({ error: err.message }));
-  a.saving = false;
-  if (!r?.ok) { textBar(a, r?.error || 'No se ha podido guardar', 'err'); return; }
-  a.ver = r.ver;
-  if (a.draft !== sent) { textBar(a, `Cambios sin guardar · ${K('Ctrl+S')}`); return; } // se siguió escribiendo
-  a.draft = null;
-  textBar(a, 'Guardado', 'ok');
-  setTimeout(() => { if (a.draft == null && a.body?.querySelector('.art-edbar.ok')) textBar(a, null); }, 1400);
-}
-artEl.querySelector('.artifact-head').addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-art]');
-  if (!btn || !artifact) return;
-  const a = btn.dataset.art;
-  if (a === 'view' || a === 'code') { if (artifact.tab !== a) { artifact.tab = a; renderArtifact(); } }
-  else if (a === 'close') { if (await confirmDiscard()) closeArtifact(); }
-  else if (a === 'window') { if (artifact.kind === 'file') api.openPath(artifact.path); else if (artifact.kind === 'url') window.open(artifact.text); else api.previewHtml(artifact.text); } // window.open → navegador
-  else if (a === 'folder') api.showInFolder(artifact.path);
-  else if (a === 'wide') { artEl.classList.toggle('wide'); btn.title = artEl.classList.contains('wide') ? 'Volver al chat' : 'Ampliar sobre el chat'; }
-  else if (a === 'copy') { navigator.clipboard.writeText(artifact.text); flashCopied(btn); }
-  else if (a === 'save') {
-    const name = `${artifact.title.replace(/[\\/:*?"<>|]+/g, '').trim().slice(0, 60) || 'artefacto'}.${ART[artifact.kind][1]}`;
-    const p = await api.exportChat({ name, text: artifact.text, cwd: current()?.cwd, title: 'Guardar el artefacto' });
-    if (p) toast(`Guardado en ${shortPath(p)}`);
-  }
-});
 $('#art-docs').addEventListener('click', () => togglePanel());
 $('#panel-toggle').addEventListener('click', () => togglePanel());
 // Ancho: arrastrando el borde izquierdo (el <webview> se tragaría el ratón: se desactiva mientras)
@@ -1196,6 +1633,8 @@ function diffHtml(oldStr, newStr) {
   return `<pre class="diff">${lines.join('\n')}</pre>`;
 }
 
+// La ruta de un archivo que Claude lee o cambia: pulsándola se abre en el panel (en Cambios o en su línea)
+const toolPath = (file, tab, extra = '', line) => `<div class="tool-path"><button type="button" class="tool-file" data-open-file="${esc(file || '')}" data-tab="${tab}"${line ? ` data-line="${Number(line) || 1}"` : ''} title="Abrir en el panel">${esc(file || '')}</button>${extra}</div>`;
 function toolInputHtml(b) {
   const i = b.input || {};
   const ext = (i.file_path || '').split('.').pop().toLowerCase();
@@ -1204,13 +1643,13 @@ function toolInputHtml(b) {
     case 'PowerShell':
       return `${i.description ? `<div class="tool-desc">${esc(i.description)}</div>` : ''}<pre class="cmd">${highlight(i.command || '', b.name === 'Bash' ? 'bash' : 'powershell')}</pre>`;
     case 'Edit':
-      return `<div class="tool-path">${esc(i.file_path)}${i.replace_all ? ' · todas las apariciones' : ''}</div>${diffHtml(i.old_string, i.new_string)}`;
+      return `${toolPath(i.file_path, 'diff', i.replace_all ? ' · todas las apariciones' : '')}${diffHtml(i.old_string, i.new_string)}`;
     case 'MultiEdit':
-      return `<div class="tool-path">${esc(i.file_path)}</div>${(i.edits || []).map((e) => diffHtml(e.old_string, e.new_string)).join('')}`;
+      return `${toolPath(i.file_path, 'diff')}${(i.edits || []).map((e) => diffHtml(e.old_string, e.new_string)).join('')}`;
     case 'Write':
-      return `<div class="tool-path">${esc(i.file_path)}</div>${codeBlock(i.content || '', LANG_BY_EXT[ext], baseName(i.file_path))}`;
+      return `${toolPath(i.file_path, 'diff')}${codeBlock(i.content || '', LANG_BY_EXT[ext], baseName(i.file_path))}`;
     case 'Read':
-      return `<div class="tool-path">${esc(i.file_path)}${i.offset ? ` · desde la línea ${i.offset}` : ''}${i.limit ? ` · ${i.limit} líneas` : ''}</div>`;
+      return toolPath(i.file_path, 'code', `${i.offset ? ` · desde la línea ${i.offset}` : ''}${i.limit ? ` · ${i.limit} líneas` : ''}`, i.offset);
     case 'Task':
     case 'Agent':
       return `<div class="tool-desc">${esc(i.description || '')}${i.subagent_type ? ` · ${esc(i.subagent_type)}` : ''}</div><details class="sub-prompt"><summary>Instrucciones al subagente</summary><div class="md">${md(i.prompt || '')}</div></details>`;
@@ -1467,7 +1906,6 @@ function renderThread() {
   if (thread.querySelector('.preview-view.loading')) queueDiagrams(); // el HTML pudo salir de mdCache
   syncArtifact(c);
   if (artifact?.kind === 'mermaid' && !artifact.img) renderArtifact(); // quizá ya está dibujado
-  if (artifact) artFiles.hidden = true;
   updateWorking();
 }
 
@@ -1567,6 +2005,8 @@ function flashCopied(btn) {
 thread.addEventListener('click', (e) => {
   const link = e.target.closest('a[href]');
   if (link && LOCAL_URL.test(link.href) && !e.ctrlKey && !e.metaKey) { e.preventDefault(); openArtifactUrl(link.href); return; }
+  const tf = e.target.closest('[data-open-file]');
+  if (tf?.dataset.openFile) { openToolFile(tf.dataset.openFile, tf.dataset.tab, Number(tf.dataset.line) || undefined); return; }
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   if (btn.dataset.action === 'speak-msg') { speak(shownMessages(current())[btn.closest('.msg').dataset.i]); return; }
@@ -2985,6 +3425,7 @@ function showHelp() {
       [K('Ctrl+Shift+D'), 'Dividir en dos: la misma ventana con la misma cuenta, otra ventana al lado con otra cuenta'],
       [K('Ctrl+Shift+E'), 'Mostrar u ocultar la barra lateral (conversaciones fijadas y recientes)'],
       [K('Ctrl+Shift+F'), 'Mostrar u ocultar el panel de documentos de la conversación (y la conversación misma)'],
+      [K('Ctrl+P'), 'Abrir un archivo en el panel: los de la conversación o cualquiera de su carpeta'],
       [K('Ctrl+O'), 'Cambiar la vista de la conversación: normal, con el razonamiento o detallada'],
     ]],
     ['Modo terminal', [
@@ -4333,6 +4774,8 @@ function typeToInput(e) {
 }
 
 document.addEventListener('keydown', (e) => {
+  // En el editor del panel y su buscador, las teclas son suyas (salvo los atajos de la app con Ctrl+Mayús y Ctrl+Tab)
+  if (e.target.closest?.('#artifact .monaco-editor, .art-quick') && !((e.ctrlKey || e.metaKey) && (e.shiftKey || e.key === 'Tab'))) return;
   if (e.key === 'Escape') {
     if (e.defaultPrevented) return; // ya lo ha usado un menú o el autocompletado
     if (mic.state === 'rec') { e.preventDefault(); stopDictation(true); return; }
@@ -4373,6 +4816,7 @@ document.addEventListener('keydown', (e) => {
   if (k === 'd' && e.shiftKey && !e.altKey) { e.preventDefault(); splitWindow($('#tb-menu')); return; }
   if (k === 'e' && e.shiftKey && !e.altKey) { e.preventDefault(); toggleSidebar(); return; }
   if (k === 'f' && e.shiftKey && !e.altKey && !document.querySelector('dialog[open]')) { e.preventDefault(); togglePanel(); return; }
+  if (k === 'p' && !e.shiftKey && !e.altKey && !termOwns && !document.querySelector('dialog[open]')) { e.preventDefault(); openQuick(); return; }
   if (k === 'o' && !e.shiftKey && !e.altKey && !inTerm) { e.preventDefault(); cycleView(); return; }
   // En la vista de terminal, Ctrl+F y Ctrl+H (retroceso) son de Claude Code
   if (k === 'f' && !e.shiftKey && !e.altKey && !termOwns && !document.querySelector('dialog[open]')) { e.preventDefault(); openFind(); return; }
@@ -4888,12 +5332,14 @@ async function tileWindows() {
 // ---------- Reinicio para aplicar cambios ----------
 const updDialog = $('#update-dialog');
 const UPD_TEXT = $('#upd-text').textContent;
-api.onUpdateReady(({ busy, text }) => {
+// busy: solo las que trabajan en una respuesta (no la que ha pedido el reinicio ni los procesos en segundo plano)
+api.onUpdateReady(({ busy, names = [], text }) => {
   $('#upd-text').textContent = text || UPD_TEXT;
   $('#upd-busy').hidden = !busy;
+  const which = names.length ? ` (${names.map((n) => `«${n}»`).join(', ')})` : '';
   $('#upd-busy').textContent = busy === 1
-    ? 'Hay una pestaña trabajando: si reinicias ahora, se interrumpe.'
-    : `Hay ${busy} pestañas trabajando: si reinicias ahora, se interrumpen.`;
+    ? `Hay una pestaña respondiendo${which}: si reinicias ahora, se interrumpe y la retomas al volver.`
+    : `Hay ${busy} pestañas respondiendo${which}: si reinicias ahora, se interrumpen y las retomas al volver.`;
   $('#upd-idle').hidden = !busy;
   if (!updDialog.open) updDialog.showModal();
   $(busy ? '#upd-idle' : '#upd-now').focus();

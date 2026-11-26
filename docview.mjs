@@ -746,12 +746,46 @@ const PDFJS_DIRS = new Set(['build', 'web', 'cmaps', 'standard_fonts', 'wasm', '
 const PDFJS_MIME = { mjs: 'text/javascript', js: 'text/javascript', css: 'text/css', svg: 'image/svg+xml', png: 'image/png', gif: 'image/gif', bcmap: 'application/octet-stream', pfb: 'application/octet-stream', ttf: 'font/ttf', wasm: 'application/wasm', icc: 'application/octet-stream', json: 'application/json' };
 const MAX_SAVE = 300 * 1024 * 1024;
 const BUSY = '¿Está abierto en otra aplicación (Word, Excel…)? Ciérralo y vuelve a guardar.';
-const TEXT_EDIT = new Set(['md', 'markdown', 'html', 'htm', 'svg']);
+const MAX_TEXT = 5 * 1024 * 1024;
+// Documentos que nunca se editan como texto (son zip o binarios aunque empiecen como texto)
+const DOC_BINARY = new Set(['docx', 'xlsx', 'xlsm', 'xls', 'ods', 'pptx', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'zip', 'exe', 'dll']);
+// Binario: un byte nulo al principio (UTF-16 también lo tiene: tampoco se edita aquí)
+const isBinary = (buf) => buf.subarray(0, 8000).includes(0);
+
+// Archivos de una carpeta, para buscarlos desde el panel (rutas relativas con /). Con git, los suyos
+// (respeta .gitignore); si no, recorriéndola sin ocultos ni node_modules, con límite de número y de tiempo
+export async function listFiles(root, max = 20000) {
+  const { execFile } = await import('node:child_process');
+  const git = await new Promise((resolve) => {
+    execFile('git', ['ls-files', '-co', '--exclude-standard', '-z'], { cwd: root, maxBuffer: 64 * 1024 * 1024, timeout: 5000, windowsHide: true },
+      (err, out) => resolve(err ? null : out.split('\0').filter(Boolean)));
+  });
+  if (git) return { files: git.slice(0, max), more: git.length > max };
+  const files = [];
+  const until = Date.now() + 3000;
+  const walk = async (dir, rel, depth) => {
+    if (files.length >= max || Date.now() > until || depth > 12) return;
+    let items;
+    try { items = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const it of items) {
+      if (files.length >= max) return;
+      const name = it.name;
+      if (name.startsWith('.') || name === 'node_modules' || name === '__pycache__' || (!rel && /^(appdata|library)$/i.test(name) && same(root, HOME))) continue;
+      const r = rel ? `${rel}/${name}` : name;
+      if (it.isDirectory()) await walk(path.join(dir, name), r, depth + 1);
+      else if (it.isFile()) files.push(r);
+    }
+  };
+  await walk(root, '', 0);
+  return { files, more: files.length >= max || Date.now() > until };
+}
+
 // Escritura atómica: un archivo temporal en la misma carpeta y se renombra encima (sin dejarlo a medias)
 function writeAtomic(file, data) {
   const tmp = path.join(path.dirname(file), `.~${path.basename(file)}.${process.pid}.tmp`);
   try {
     fs.writeFileSync(tmp, data);
+    if (!IS_WIN) try { fs.chmodSync(tmp, fs.statSync(file).mode); } catch {} // que un script siga siendo ejecutable
     fs.renameSync(tmp, file);
   } catch (e) {
     try { fs.unlinkSync(tmp); } catch {}
@@ -921,24 +955,33 @@ export function createDocView({ log = () => {} } = {}) {
     return () => { clearTimeout(timer); try { w.close(); } catch {} };
   }
 
-  // Documentos de texto (Markdown, HTML, SVG): la pestaña Código del panel los edita
-  function readText(file) {
-    if (!TEXT_EDIT.has(extOf(file))) return { error: 'No se edita como texto' };
+  // Cualquier archivo de texto (código, Markdown, HTML, SVG, CSV…): el editor del panel lo edita. Lo que
+  // no es UTF-8 se enseña, pero no se guarda (se estropearían sus acentos)
+  async function readText(file) {
     try {
-      const st = fs.statSync(file);
-      if (st.size > 5 * 1024 * 1024) return { error: 'Demasiado grande para editarlo aquí' };
-      return { text: fs.readFileSync(file, 'utf8'), ver: Math.floor(st.mtimeMs) };
-    } catch (e) { return { error: e.code === 'ENOENT' ? 'No existe (¿se ha movido o borrado?)' : e.message }; }
+      const st = await fs.promises.stat(file);
+      if (!st.isFile()) return { error: 'No es un archivo' };
+      if (st.size > MAX_TEXT) return { error: 'Demasiado grande para abrirlo en el editor', big: true };
+      const buf = await fs.promises.readFile(file);
+      if (isBinary(buf)) return { error: 'No es un archivo de texto', binary: true };
+      try { return { text: new TextDecoder('utf-8', { fatal: true }).decode(buf), ver: Math.floor(st.mtimeMs) }; } catch {}
+      return { text: buf.toString('latin1'), ver: Math.floor(st.mtimeMs), readOnly: 'No está en UTF-8: solo se puede leer' };
+    } catch (e) { return { error: e.code === 'ENOENT' ? 'No existe (¿se ha movido o borrado?)' : e.message, gone: e.code === 'ENOENT' }; }
   }
-  function saveText(file, text, ver) {
-    if (!TEXT_EDIT.has(extOf(file)) || typeof text !== 'string') return { error: 'No se edita como texto' };
+  // force: guardar aunque haya cambiado fuera (el usuario lo ha pedido)
+  async function saveText(file, text, ver, force = false) {
+    if (typeof text !== 'string' || DOC_BINARY.has(extOf(file))) return { error: 'No se edita como texto' };
     try {
-      if (Math.floor(fs.statSync(file).mtimeMs) !== ver) return { error: 'El archivo ha cambiado mientras lo editabas. Descarta para ver la versión nueva.' };
+      const st = await fs.promises.stat(file).catch((e) => { if (e.code === 'ENOENT' && force) return null; throw e; });
+      if (st && !force) {
+        if (Math.floor(st.mtimeMs) !== ver) return { error: 'Ha cambiado fuera de aquí mientras lo editabas.', changed: true };
+        if (isBinary(await fs.promises.readFile(file))) return { error: 'No es un archivo de texto' };
+      }
       writeAtomic(file, Buffer.from(text, 'utf8'));
       return { ok: true, ver: Math.floor(fs.statSync(file).mtimeMs) };
     } catch (e) {
       if (!/^(EBUSY|EPERM|EACCES|ENOENT)$/.test(e.code)) log(e);
-      return { error: /^(EBUSY|EPERM|EACCES)$/.test(e.code) ? BUSY : e.message };
+      return { error: /^(EBUSY|EPERM|EACCES)$/.test(e.code) ? BUSY : e.code === 'ENOENT' ? 'Ya no existe (¿se ha movido o borrado?)' : e.message };
     }
   }
 

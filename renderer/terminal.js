@@ -237,6 +237,7 @@ const SCREEN = {
   option: /^\s*(?:[❯›>↑↓]\s*)?(\d+)\.\s+(.+?)\s*$/, // «❯ 1. Opción» (↑/↓ si la lista se desplaza)
   rewindList: /restore the code and\/or conversation to the point before/i, // /rewind: elegir mensaje
   rewindConfirm: /confirm you want to restore/i, // /rewind: qué restaurar
+  rewindEmpty: /nothing to rewind to yet/i, // /rewind sin mensajes
   selected: /^\s*[❯>]\s+(.+?)\s*$/, // la línea marcada de un selector (❯ o >, según la versión)
   field: /^[❯>]\s/, // el campo de la terminal: la línea justo debajo de una raya
   rule: /^─{10,}/, // esa raya (puede llevar el nombre de la sesión: «──── mi-sesión ─»)
@@ -387,7 +388,8 @@ const REWIND_LABELS = [
   [/never mind/i, 'Cancelar', 'cancel'],
 ];
 const rewindText = (s) => String(s || '').replace(/\s+/g, ' ').replace(/…$/, '').trim();
-const rewindable = (m) => m.role === 'user' && m.text?.trim() && !/^[/!]/.test(m.text.trim());
+// Los que entraron en cola mientras trabajaba no salen en /rewind de Claude Code (queued, termchat.mjs)
+const rewindable = (m) => m.role === 'user' && !m.queued && m.text?.trim() && !/^[/!]/.test(m.text.trim());
 
 function openRewind() {
   const c = current();
@@ -458,42 +460,77 @@ async function termRewind(c, m, pick, extra = '') {
     if (extra && !input.value) { input.value = extra; autosize(); }
   };
   const fieldUsed = () => !!termField(id);
+  // Si no se encuentra el mensaje, se cierra el selector sin tocar nada (nunca se deja marcado otro)
+  const giveUp = (what, msg) => {
+    termScreenMiss(what, id);
+    if (termScreen(id).some((l) => SCREEN.rewindList.test(l) || SCREEN.rewindEmpty.test(l))) api.ptyWrite(id, '\x1b');
+    toast(msg);
+    if (extra && !input.value) { input.value = extra; autosize(); }
+  };
   // Al interrumpir, Claude Code puede devolver el mensaje a su campo: se borra antes de escribir /rewind
   if (fieldUsed()) { api.ptyWrite(id, '\x03'); await wait(300); }
   api.ptyWrite(id, '/rewind');
   await wait(150);
   api.ptyWrite(id, '\r');
-  if (!await after(SCREEN.rewindList)) return toTerminal('el selector de /rewind («Restore the code and/or conversation»)');
+  let open = null;
+  for (let i = 0; i < 20 && !open; i++) {
+    const lines = termScreen(id);
+    open = lines.some((l) => SCREEN.rewindList.test(l)) ? 'list' : lines.some((l) => SCREEN.rewindEmpty.test(l)) ? 'empty' : null;
+    if (!open) await wait(150);
+  }
+  if (open === 'empty') return giveUp('mensajes en /rewind («Nothing to rewind to yet»)', 'Claude Code no tiene mensajes a los que volver en esta sesión.');
+  if (!open) return toTerminal('el selector de /rewind («Restore the code and/or conversation»)');
 
-  // Empieza en «(current)»: se sube hasta el mensaje (si hay varios iguales, el que toca contando desde abajo)
-  const want = rewindText(m.text);
+  // La lista de Claude Code son tus mensajes (sin comandos ni los que entraron en cola) y «(current)»,
+  // con la marca en «(current)». Se sube de uno en uno leyendo la marca: vale el mensaje con el mismo
+  // texto a la distancia esperada desde abajo o, si no cuadra (compactada, interrumpido…), el más cercano
+  const norm = (s) => rewindText(s).replace(/\[(?:Image|Pasted text) #\d+[^\]]*\]\s*/g, '').trim();
+  const want = norm(m.text);
   const same = (s) => { const n = Math.min(s.length, want.length, 40); return n > 0 && s.slice(0, n) === want.slice(0, n); };
   const msgs = c.messages.filter(rewindable);
-  let skip = msgs.slice(msgs.indexOf(m) + 1).filter((x) => same(rewindText(x.text))).length;
+  const dist = msgs.length - msgs.indexOf(m);
   const selected = () => {
     const lines = termScreen(id);
     const from = lines.findLastIndex((l) => SCREEN.rewindList.test(l));
     const at = from < 0 ? -1 : lines.findIndex((l, j) => j > from && SCREEN.selected.test(l));
-    return at < 0 ? null : { text: rewindText(SCREEN.selected.exec(lines[at])[1]), info: rewindText(lines[at + 1]) };
+    if (at < 0) return null;
+    // Al moverse cambia la fila de la marca o, si la lista se desplaza, el «N more above»
+    const above = lines.slice(from).find((l) => /\d+ more above/.test(l)) || '';
+    return { text: norm(SCREEN.selected.exec(lines[at])[1]), info: rewindText(lines[at + 1]), key: `${at}|${above}|${lines[at]}` };
   };
-  let info = null;
-  let prev = selected()?.text;
-  for (let i = 0; i < msgs.length + 6 && info === null; i++) {
-    api.ptyWrite(id, '\x1b[A');
-    // Claude Code tarda en repintar: se espera a que se mueva la marca (o 1,5 s si hay dos mensajes iguales seguidos)
-    let sel = null;
+  // Claude Code tarda en repintar: se espera a que se mueva la marca (sin moverse en 1,5 s, es el final)
+  const move = async (key, from) => {
+    api.ptyWrite(id, key);
     for (let j = 0; j < 15; j++) {
       await wait(100);
-      sel = selected();
-      if (sel && sel.text !== prev) break;
+      const s = selected();
+      if (s && s.key !== from.key) return s;
     }
-    if (!sel) break;
-    // Sin moverse y sin ser el buscado: se ha llegado arriba del todo
-    if (sel.text === prev && !same(sel.text)) break;
-    prev = sel.text;
-    if (same(sel.text) && skip-- === 0) info = sel.info;
+    return null;
+  };
+  let sel = selected();
+  if (!sel) return toTerminal('la marca del selector de /rewind');
+  const found = [];
+  let pos = 0; // ↑ dados desde «(current)»
+  while (pos < msgs.length + 50 && found.at(-1)?.up !== dist && !(found.length && pos >= dist + 5)) {
+    const next = await move('\x1b[A', sel);
+    if (!next) break;
+    sel = next;
+    pos++;
+    if (same(sel.text) || (!sel.text && pos === dist)) found.push({ up: pos, info: sel.info });
   }
-  if (info === null) return toTerminal(`el mensaje «${want.slice(0, 40)}» en el selector de /rewind`);
+  const best = found.sort((a, b) => Math.abs(a.up - dist) - Math.abs(b.up - dist) || a.up - b.up)[0];
+  const lost = `No encuentro ese mensaje en el /rewind de Claude Code; no se ha tocado nada.`;
+  if (!best) return giveUp(`el mensaje «${want.slice(0, 40)}» en el selector de /rewind`, lost);
+  // Si se ha subido más allá (buscando hasta arriba), se baja hasta el elegido
+  while (pos > best.up) {
+    const next = await move('\x1b[B', sel);
+    if (!next) break;
+    sel = next;
+    pos--;
+  }
+  if (pos !== best.up || !(same(sel.text) || !sel.text)) return giveUp(`el mensaje «${want.slice(0, 40)}» al volver a él en /rewind`, lost);
+  const info = best.info;
   api.ptyWrite(id, '\r');
   const lines = await after(SCREEN.rewindConfirm);
   if (!lines) return toTerminal('las opciones de /rewind («Confirm you want to restore»)');

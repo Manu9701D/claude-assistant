@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:;">
   <title>Claude Assistant</title>
   <link rel="stylesheet" href="../node_modules/katex/dist/katex.min.css">
   <link rel="stylesheet" href="../node_modules/@fontsource-variable/source-serif-4/opsz.css">
@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="output.css">
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="terminal.css">
+  <link rel="stylesheet" href="panel.css">
   <link rel="stylesheet" href="appearance.css">
 </head>
 <body>
@@ -137,20 +138,36 @@
   </main>
   <aside id="artifact" hidden>
     <div class="artifact-resize" title="Arrastra para cambiar el ancho"></div>
+    <div class="art-strip">
+      <div class="art-tabs" role="tablist"></div>
+      <button type="button" class="icon-btn sm" data-art="quick" title="Abrir un archivo (Ctrl+P)"></button>
+      <span class="art-strip-end">
+        <button type="button" class="icon-btn sm" data-art="wide" title="Ampliar sobre el chat"></button>
+        <button type="button" class="icon-btn sm" data-art="close" title="Ocultar el panel (Ctrl+Shift+F)"></button>
+      </span>
+    </div>
     <header class="artifact-head">
-      <button type="button" class="artifact-title"></button>
-      <div class="artifact-tabs" role="tablist">
-        <button data-art="view" role="tab">Vista</button><button data-art="code" role="tab">Código</button>
-      </div>
-      <button class="icon-btn" data-art="copy" title="Copiar"></button>
-      <button class="icon-btn" data-art="save" title="Descargar"></button>
-      <button class="icon-btn" data-art="window" title="Abrir en una ventana"></button>
-      <button class="icon-btn" data-art="folder" title="Mostrar en su carpeta"></button>
-      <button class="icon-btn" data-art="wide" title="Ampliar sobre el chat"></button>
-      <button class="icon-btn" data-art="close" title="Cerrar (Esc)"></button>
+      <button type="button" class="art-crumb"></button>
+      <span class="art-status"></span>
+      <div class="artifact-tabs" role="tablist"></div>
+      <span class="art-actions">
+        <button type="button" class="icon-btn sm" data-art="copy" title="Copiar"></button>
+        <button type="button" class="icon-btn sm" data-art="save" title="Descargar"></button>
+        <button type="button" class="icon-btn sm" data-art="window" title="Abrir en una ventana"></button>
+        <button type="button" class="icon-btn sm" data-art="folder" title="Mostrar en su carpeta"></button>
+      </span>
     </header>
-    <div class="artifact-files" hidden></div>
-
+    <div class="art-quick" hidden>
+      <div class="art-quick-box">
+        <input type="text" spellcheck="false" autocomplete="off" placeholder="Buscar un archivo por su nombre…" aria-label="Buscar un archivo">
+        <div class="art-quick-list" role="listbox"></div>
+      </div>
+    </div>
+    <div class="art-empty" hidden>
+      <span class="art-empty-ico"></span>
+      <p>Aquí verás los documentos que Claude crea o cambia, el código de la carpeta y la conversación.</p>
+      <p class="sub">Ctrl+P para abrir un archivo</p>
+    </div>
   </aside>
   </div>
 
@@ -771,6 +788,7 @@
   <script src="../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
   <script src="spark.js"></script>
   <script src="terminal.js"></script>
+  <script src="editor.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
